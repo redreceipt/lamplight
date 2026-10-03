@@ -23,17 +23,18 @@ gh auth login
 gh auth setup-git
 
 cd /path/to/your/repo
-npx nightshift --help
-npx nightshift doctor
-npx nightshift run 72 --dry-run
-npx nightshift run 72
+npx --allow-git=root github:redreceipt/nightshift --help
+npx --allow-git=root github:redreceipt/nightshift doctor
+npx --allow-git=root github:redreceipt/nightshift run 72 --dry-run
+npx --allow-git=root github:redreceipt/nightshift run 72
 ```
 
-For repeatable runs, pin a version: `npx nightshift@0.1.0 --help`. Nothing is
-added to the target repo's package manifest.
+**npm publication is blocked:** npm rejected `nightshift` because the existing
+package `night-shift` is too similar. No npm release has been published. Use the
+GitHub invocation above while the npm package name is being resolved.
 
-To run directly from GitHub, use
-`npx --allow-git=root github:redreceipt/nightshift --help`. The per-command
+For repeatable runs, pin a Git commit instead of following the default branch.
+Nothing is added to the target repo's package manifest. The per-command
 `--allow-git=root` opt-in is required by npm 12; omit it on older npm versions.
 It does not change global npm settings. Nightshift has no Git dependencies.
 
@@ -48,11 +49,11 @@ It does not change global npm settings. Nightshift has no Git dependencies.
 | `--version` | Print the package version. |
 
 ```sh
-npx nightshift watch --label bug
-npx nightshift watch --repo owner/repo --interval 600
-npx nightshift run 72 81 --model 'anthropic/*sonnet*'
-npx nightshift watch --triage --qa --dry-run
-npx nightshift run 72 --workflow ~/.config/nightshift/my-workflow.md
+npx --allow-git=root github:redreceipt/nightshift watch --label bug
+npx --allow-git=root github:redreceipt/nightshift watch --repo owner/repo --interval 600
+npx --allow-git=root github:redreceipt/nightshift run 72 81 --model 'anthropic/*sonnet*'
+npx --allow-git=root github:redreceipt/nightshift watch --triage --qa --dry-run
+npx --allow-git=root github:redreceipt/nightshift run 72 --workflow ~/.config/nightshift/my-workflow.md
 ```
 
 ### Options
@@ -144,7 +145,7 @@ runner, real temporary Git repositories, and local gh/pi doubles; they do not ma
 GitHub changes or spend model tokens. CI tests Linux/macOS on Node 22.19 and 24,
 including launching the packed executable through npm.
 
-Maintainer release:
+Maintainer release (after resolving the npm package name):
 
 ```sh
 npm login
