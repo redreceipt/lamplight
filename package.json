@@ -1,9 +1,9 @@
 {
-  "name": "cued",
+  "name": "nightshift",
   "version": "0.1.0",
   "description": "Issues in. Pull requests out. A lightweight GitHub + pi runner inspired by Symphony.",
   "type": "module",
-  "bin": { "cued": "bin/cued.js" },
+  "bin": { "nightshift": "bin/nightshift.js" },
   "files": ["bin/", "prompts/"],
   "engines": { "node": ">=22.19.0" },
   "os": ["darwin", "linux"],
@@ -11,9 +11,9 @@
     "test": "node --test",
     "prepublishOnly": "npm test"
   },
-  "repository": { "type": "git", "url": "git+https://github.com/redreceipt/cued.git" },
-  "homepage": "https://github.com/redreceipt/cued#readme",
-  "bugs": { "url": "https://github.com/redreceipt/cued/issues" },
+  "repository": { "type": "git", "url": "git+https://github.com/redreceipt/nightshift.git" },
+  "homepage": "https://github.com/redreceipt/nightshift#readme",
+  "bugs": { "url": "https://github.com/redreceipt/nightshift/issues" },
   "keywords": ["cli", "github", "issues", "agent", "pi", "symphony"],
   "author": "Michael Neeley",
   "license": "MIT"

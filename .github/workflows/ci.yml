@@ -20,5 +20,5 @@ jobs:
         run: |
           package=$(npm pack --pack-destination "$RUNNER_TEMP" --silent)
           cd "$RUNNER_TEMP"
-          npm exec --yes --package="$RUNNER_TEMP/$package" -- cued --help
-          npm exec --yes --package="$RUNNER_TEMP/$package" -- cued --version
+          npm exec --yes --package="$RUNNER_TEMP/$package" -- nightshift --help
+          npm exec --yes --package="$RUNNER_TEMP/$package" -- nightshift --version

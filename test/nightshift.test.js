@@ -4,12 +4,12 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { options, actionable, linkedPR } from '../bin/cued.js';
+import { options, actionable, linkedPR } from '../bin/nightshift.js';
 
-const cli = resolve('bin/cued.js');
+const cli = resolve('bin/nightshift.js');
 const repoURL = 'https://github.com/example/project';
 const issue = (number, labels = [], state = 'OPEN') => ({ number, title: `Issue ${number}`, body: 'Fix it.', labels: labels.map(name => ({ name })), state, createdAt: `2026-01-${String(number).padStart(2, '0')}` });
-const pr = (body, extra = {}) => ({ number: 99, title: 'A fix', body, headRefName: 'cued/GH-1-fix', isCrossRepository: false, closingIssuesReferences: [], ...extra });
+const pr = (body, extra = {}) => ({ number: 99, title: 'A fix', body, headRefName: 'nightshift/GH-1-fix', isCrossRepository: false, closingIssuesReferences: [], ...extra });
 
 test('CLI parsing rejects bad input and keeps explicit issues independent of watch filters', () => {
   assert.equal(options([]).help, true);
@@ -35,7 +35,7 @@ test('PR links respect repository and issue-number boundaries', () => {
 });
 
 test('real CLI: zero-setup dry run, multiple issues, failure propagation, and external state', () => {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'cued-test-')));
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'nightshift-test-')));
   try {
     const bin = join(dir, 'bin');
     const checkout = join(dir, 'checkout');
@@ -50,7 +50,7 @@ test('real CLI: zero-setup dry run, multiple issues, failure propagation, and ex
     writeFileSync(join(checkout, 'README.md'), 'Fixture\n');
     git('add', '.');
     git('commit', '-m', 'fixture');
-    const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, XDG_STATE_HOME: state, CUED_TEST_LOG: log, CUED_TEST_REPO: checkout };
+    const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, XDG_STATE_HOME: state, NIGHTSHIFT_TEST_LOG: log, NIGHTSHIFT_TEST_REPO: checkout };
     function script(name, text) {
       writeFileSync(join(bin, name), `#!${process.execPath}\n${text}`, { mode: 0o755 });
     }
@@ -61,10 +61,10 @@ test('real CLI: zero-setup dry run, multiple issues, failure propagation, and ex
       if (a[0] === 'repo' && a[1] === 'view') result = {nameWithOwner:'example/project',url:'${repoURL}',defaultBranchRef:{name:'trunk'}};
       else if (a[0] === 'issue' && a[1] === 'view') result = {number:Number(a[2]),title:'Issue '+a[2],body:'Fix it.',state:'OPEN',labels:[],createdAt:'2026-01-01'};
       else if (a[0] === 'issue' && a[1] === 'list') result = ${JSON.stringify([issue(1)])};
-      else if (a[0] === 'pr' && a[1] === 'list') result = JSON.parse(process.env.CUED_TEST_PRS || '[]');
+      else if (a[0] === 'pr' && a[1] === 'list') result = JSON.parse(process.env.NIGHTSHIFT_TEST_PRS || '[]');
       else if (a[0] === 'pr' && a[1] === 'checkout') process.exit(7);
       else if (a[0] === 'repo' && a[1] === 'clone') {
-        execFileSync('git', ['clone', process.env.CUED_TEST_REPO, a[3]]);
+        execFileSync('git', ['clone', process.env.NIGHTSHIFT_TEST_REPO, a[3]]);
         execFileSync('git', ['remote','set-url','origin','${repoURL}'], {cwd:a[3]});
       } else throw Error('Unexpected gh call: '+a.join(' '));
       if (result !== undefined) console.log(JSON.stringify(result));
@@ -73,15 +73,15 @@ test('real CLI: zero-setup dry run, multiple issues, failure propagation, and ex
       const { appendFileSync } = require('node:fs');
       if (process.argv[2] === '--version') console.log('test');
       else {
-        appendFileSync(process.env.CUED_TEST_LOG, JSON.stringify({args:process.argv.slice(2),cwd:process.cwd()})+'\\n');
-        process.exit(Number(process.env.CUED_TEST_PI_EXIT || 0));
+        appendFileSync(process.env.NIGHTSHIFT_TEST_LOG, JSON.stringify({args:process.argv.slice(2),cwd:process.cwd()})+'\\n');
+        process.exit(Number(process.env.NIGHTSHIFT_TEST_PI_EXIT || 0));
       }
     `);
     const run = (args, extra = {}, entry = cli) => spawnSync(process.execPath, [entry, ...args], { cwd: checkout, env: { ...env, ...extra }, encoding: 'utf8', timeout: 20000 });
-    const root = join(state, 'cued', 'github.com', 'example', 'project');
+    const root = join(state, 'nightshift', 'github.com', 'example', 'project');
     const before = git('status', '--porcelain').toString();
-    symlinkSync(cli, join(bin, 'cued'));
-    let result = run(['--help'], {}, join(bin, 'cued'));
+    symlinkSync(cli, join(bin, 'nightshift'));
+    let result = run(['--help'], {}, join(bin, 'nightshift'));
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /Inspired by OpenAI Symphony/);
     result = run(['run', '1', '2', '--dry-run']);
@@ -90,7 +90,7 @@ test('real CLI: zero-setup dry run, multiple issues, failure propagation, and ex
     assert.match(result.stdout, /Would run #2/);
     assert.equal(existsSync(state), false);
     assert.equal(existsSync(log), false);
-    result = run(['watch', '--dry-run', '--triage', '--qa'], { CUED_TEST_PRS: JSON.stringify([pr('Closes #1')]) });
+    result = run(['watch', '--dry-run', '--triage', '--qa'], { NIGHTSHIFT_TEST_PRS: JSON.stringify([pr('Closes #1')]) });
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /Would triage/);
     assert.match(result.stdout, /Would maintain PR #99/);
@@ -118,12 +118,12 @@ test('real CLI: zero-setup dry run, multiple issues, failure propagation, and ex
     assert.equal(existsSync(join(root, '.lock')), false);
     const workflow = join(dir, 'custom.md');
     writeFileSync(workflow, 'Custom workflow sentinel');
-    result = run(['run', '3', '--workflow', workflow], { CUED_TEST_PI_EXIT: '9' });
+    result = run(['run', '3', '--workflow', workflow], { NIGHTSHIFT_TEST_PI_EXIT: '9' });
     assert.equal(result.status, 1);
     assert.match(result.stderr, /pi exited with 9/);
     assert.match(readFileSync(log, 'utf8'), /Custom workflow sentinel/);
     assert.equal(existsSync(join(root, '.lock')), false);
-    result = run(['watch'], { CUED_TEST_PRS: JSON.stringify([pr('Closes #1')]) });
+    result = run(['watch'], { NIGHTSHIFT_TEST_PRS: JSON.stringify([pr('Closes #1')]) });
     assert.equal(result.status, 1);
     assert.match(result.stderr, /gh exited with 7/);
     assert.equal(readFileSync(log, 'utf8').trim().split('\n').length, 3, 'checkout failure must not start pi');
