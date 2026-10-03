@@ -23,14 +23,16 @@ gh auth login
 gh auth setup-git
 
 cd /path/to/your/repo
-npx github:redreceipt/cued --help
-npx github:redreceipt/cued doctor
-npx github:redreceipt/cued run 72 --dry-run
-npx github:redreceipt/cued run 72
+npx --allow-git=root github:redreceipt/cued --help
+npx --allow-git=root github:redreceipt/cued doctor
+npx --allow-git=root github:redreceipt/cued run 72 --dry-run
+npx --allow-git=root github:redreceipt/cued run 72
 ```
 
 **npm publication is pending.** The GitHub invocation works without publishing;
-after the npm release, use `npx cued` instead of `npx github:redreceipt/cued`.
+after the npm release, use `npx cued` instead of the GitHub invocation.
+The per-command `--allow-git=root` opt-in is required by npm 12; omit it on older
+npm versions. It does not change global npm settings. Cued has no Git dependencies.
 For repeatable runs, pin a published version or Git commit rather than following
 an unpinned package. Nothing is added to the target repo's package manifest.
 
@@ -45,11 +47,11 @@ an unpinned package. Nothing is added to the target repo's package manifest.
 | `--version` | Print the package version. |
 
 ```sh
-npx github:redreceipt/cued watch --label bug
-npx github:redreceipt/cued watch --repo owner/repo --interval 600
-npx github:redreceipt/cued run 72 81 --model 'anthropic/*sonnet*'
-npx github:redreceipt/cued watch --triage --qa --dry-run
-npx github:redreceipt/cued run 72 --workflow ~/.config/cued/my-workflow.md
+npx --allow-git=root github:redreceipt/cued watch --label bug
+npx --allow-git=root github:redreceipt/cued watch --repo owner/repo --interval 600
+npx --allow-git=root github:redreceipt/cued run 72 81 --model 'anthropic/*sonnet*'
+npx --allow-git=root github:redreceipt/cued watch --triage --qa --dry-run
+npx --allow-git=root github:redreceipt/cued run 72 --workflow ~/.config/cued/my-workflow.md
 ```
 
 ### Options
