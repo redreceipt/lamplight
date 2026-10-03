@@ -23,18 +23,19 @@ gh auth login
 gh auth setup-git
 
 cd /path/to/your/repo
-npx --allow-git=root github:redreceipt/cued --help
-npx --allow-git=root github:redreceipt/cued doctor
-npx --allow-git=root github:redreceipt/cued run 72 --dry-run
-npx --allow-git=root github:redreceipt/cued run 72
+npx cued --help
+npx cued doctor
+npx cued run 72 --dry-run
+npx cued run 72
 ```
 
-**npm publication is pending.** The GitHub invocation works without publishing;
-after the npm release, use `npx cued` instead of the GitHub invocation.
-The per-command `--allow-git=root` opt-in is required by npm 12; omit it on older
-npm versions. It does not change global npm settings. Cued has no Git dependencies.
-For repeatable runs, pin a published version or Git commit rather than following
-an unpinned package. Nothing is added to the target repo's package manifest.
+For repeatable runs, pin a version: `npx cued@0.1.0 --help`. Nothing is added to
+the target repo's package manifest.
+
+To run directly from GitHub instead, use
+`npx --allow-git=root github:redreceipt/cued --help`. The per-command
+`--allow-git=root` opt-in is required by npm 12; omit it on older npm versions.
+It does not change global npm settings. Cued has no Git dependencies.
 
 ## Commands
 
@@ -47,11 +48,11 @@ an unpinned package. Nothing is added to the target repo's package manifest.
 | `--version` | Print the package version. |
 
 ```sh
-npx --allow-git=root github:redreceipt/cued watch --label bug
-npx --allow-git=root github:redreceipt/cued watch --repo owner/repo --interval 600
-npx --allow-git=root github:redreceipt/cued run 72 81 --model 'anthropic/*sonnet*'
-npx --allow-git=root github:redreceipt/cued watch --triage --qa --dry-run
-npx --allow-git=root github:redreceipt/cued run 72 --workflow ~/.config/cued/my-workflow.md
+npx cued watch --label bug
+npx cued watch --repo owner/repo --interval 600
+npx cued run 72 81 --model 'anthropic/*sonnet*'
+npx cued watch --triage --qa --dry-run
+npx cued run 72 --workflow ~/.config/cued/my-workflow.md
 ```
 
 ### Options
@@ -150,9 +151,9 @@ npm login
 npm publish --access public
 ```
 
-Confirm `cued` is still available before the first publication. npm can reject
-names despite an empty registry lookup. Publish only after tests and a real CLI
-smoke run, and inspect `npm pack --dry-run` to ensure no private files ship.
+Bump the package version before subsequent releases. Publish only after tests
+and a real CLI smoke run, and inspect `npm pack --dry-run` to ensure no private
+files ship.
 
 ## Origin
 
