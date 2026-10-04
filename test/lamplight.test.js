@@ -107,6 +107,11 @@ test('real CLI: zero-setup dry run, multiple issues, temporary workspace lifecyc
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /Would run #1/);
     assert.match(result.stdout, /Would run #2/);
+    assert.match(result.stdout, /Session plan complete .*0 agent runs finished/);
+    assert.doesNotMatch(result.stdout + result.stderr, /\x1b/);
+    result = run(['run', '1', '--dry-run'], { LAMPLIGHT_TEST_PRS: JSON.stringify([pr('Closes #1')]) });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /0 agent runs finished, 1 skipped/);
     assert.equal(existsSync(state), false);
     assert.equal(existsSync(log), false);
     assert.equal(existsSync(workspacePath(result.stdout)), false);
@@ -126,6 +131,9 @@ test('real CLI: zero-setup dry run, multiple issues, temporary workspace lifecyc
     assert.equal(existsSync(join(checkout, 'state')), false);
     result = run(['run', '1', '2', '--model', 'some/model']);
     assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /Finished: Issue #1 \(agent returned\)/);
+    assert.match(result.stdout, /Finished: Issue #2 \(agent returned\)/);
+    assert.match(result.stdout, /Session complete .*2 agent runs finished, 0 skipped/);
     const root = workspacePath(result.stdout);
     assert.equal(root.startsWith(join(temp, 'lamplight-')), true);
     assert.equal(existsSync(root), false, 'successful runs remove their temporary workspaces');
@@ -146,6 +154,8 @@ test('real CLI: zero-setup dry run, multiple issues, temporary workspace lifecyc
     result = run(['run', '3', '--workflow', workflow], { LAMPLIGHT_TEST_PI_EXIT: '9' });
     assert.equal(result.status, 1);
     assert.match(result.stderr, /pi exited with 9/);
+    assert.match(result.stdout, /Session failed .*0 agent runs finished/);
+    assert.doesNotMatch(result.stdout, /Finished: Issue #3/);
     assert.match(readFileSync(log, 'utf8'), /Custom workflow sentinel/);
     const failedRoot = workspacePath(result.stdout);
     assert.notEqual(failedRoot, root);
@@ -179,6 +189,7 @@ test('real CLI: zero-setup dry run, multiple issues, temporary workspace lifecyc
         });
       });
       assert.match(output, /Triaging open issues/);
+      assert.match(output, /Session interrupted .*2 agent runs finished/);
       assert.match(output, issues.length ? /Running #1/ : /Running idle QA/);
       const stages = readFileSync(log, 'utf8').trim().split('\n').map(JSON.parse).slice(-2);
       assert.match(stages[0].args.at(-1), /Triage open issues/);
