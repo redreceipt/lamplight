@@ -1,11 +1,11 @@
-# nightshift
+# lamplight
 
 **Issues in. Pull requests out.**
 
 A small, sequential GitHub Issues runner for [pi](https://pi.dev), inspired by
 [OpenAI Symphony](https://github.com/openai/symphony). Each issue gets an isolated
 clone. Pi implements the change, validates it, and opens a draft PR. Watch mode
-also maintains nightshift PRs when CI fails or review feedback arrives.
+also maintains lamplight PRs when CI fails or review feedback arrives.
 
 No setup commit. No required workflow file. No runtime npm dependencies.
 
@@ -23,37 +23,36 @@ gh auth login
 gh auth setup-git
 
 cd /path/to/your/repo
-npx --allow-git=root github:redreceipt/nightshift --help
-npx --allow-git=root github:redreceipt/nightshift doctor
-npx --allow-git=root github:redreceipt/nightshift run 72 --dry-run
-npx --allow-git=root github:redreceipt/nightshift run 72
+npx lamplight --help
+npx lamplight doctor
+npx lamplight run 72 --dry-run
+npx lamplight run 72
 ```
 
-**npm publication is blocked:** npm rejected `nightshift` because the existing
-package `night-shift` is too similar. No npm release has been published. Use the
-GitHub invocation above while the npm package name is being resolved.
+For repeatable runs, pin a version: `npx lamplight@0.1.0 --help`. Nothing is
+added to the target repo's package manifest.
 
-For repeatable runs, pin a Git commit instead of following the default branch.
-Nothing is added to the target repo's package manifest. The per-command
+To run directly from GitHub, use
+`npx --allow-git=root github:redreceipt/lamplight --help`. The per-command
 `--allow-git=root` opt-in is required by npm 12; omit it on older npm versions.
-It does not change global npm settings. Nightshift has no Git dependencies.
+It does not change global npm settings. Lamplight has no Git dependencies.
 
 ## Commands
 
 | Command | Behavior |
 | --- | --- |
 | `run 72 81` | Process each explicit issue once, in order, then exit. |
-| `watch` | Maintain open nightshift PRs, work one queued issue, sleep, repeat. |
+| `watch` | Maintain open lamplight PRs, work one queued issue, sleep, repeat. |
 | `doctor` | Check executables, GitHub auth/access, repo, and state path. With `--model`, also check that model's auth. |
 | `--help` | Full usage, examples, defaults, prerequisites, and safety notes. No credentials required. |
 | `--version` | Print the package version. |
 
 ```sh
-npx --allow-git=root github:redreceipt/nightshift watch --label bug
-npx --allow-git=root github:redreceipt/nightshift watch --repo owner/repo --interval 600
-npx --allow-git=root github:redreceipt/nightshift run 72 81 --model 'anthropic/*sonnet*'
-npx --allow-git=root github:redreceipt/nightshift watch --triage --qa --dry-run
-npx --allow-git=root github:redreceipt/nightshift run 72 --workflow ~/.config/nightshift/my-workflow.md
+npx lamplight watch --label bug
+npx lamplight watch --repo owner/repo --interval 600
+npx lamplight run 72 81 --model 'anthropic/*sonnet*'
+npx lamplight watch --triage --qa --dry-run
+npx lamplight run 72 --workflow ~/.config/lamplight/my-workflow.md
 ```
 
 ### Options
@@ -76,14 +75,14 @@ body/title references (`#72` or the full issue URL). A mention can cause a skip;
 review the referenced PR if an issue appears incorrectly in flight.
 
 Watch orders bugs first, then oldest-first, after filtering blocked issues.
-It maintains same-repository branches named `nightshift/GH-<number>-<slug>`, not arbitrary
+It maintains same-repository branches named `lamplight/GH-<number>-<slug>`, not arbitrary
 PRs, fork branches, or existing `symphony/` branches. PR checkout/fetch failures
 stop before pi runs. Each list is capped at 1,000 results and reaching that cap
 stops the runner rather than silently missing work.
 
 The bundled workflow requests focused changes, repo-specific checks, real runtime
 proof under `## Proof`, draft PRs, and no automatic merge or review request.
-Pi reads existing `AGENTS.md`/`CLAUDE.md`; no nightshift-specific file is required.
+Pi reads existing `AGENTS.md`/`CLAUDE.md`; no lamplight-specific file is required.
 Repo-local pi settings/extensions are not automatically trusted (`--no-approve`).
 Global pi configuration still applies. A custom workflow replaces implementation
 instructions, not the runner's top-level safety instructions or triage/QA tasks.
@@ -91,7 +90,7 @@ instructions, not the runner's top-level safety instructions or triage/QA tasks.
 ## Where everything lives
 
 ```text
-${XDG_STATE_HOME:-~/.local/state}/nightshift/
+${XDG_STATE_HOME:-~/.local/state}/lamplight/
   github.com/owner/repo/
     GH-72/       # implementation checkout
     PR-99/       # separate PR-maintenance checkout
@@ -101,7 +100,7 @@ ${XDG_STATE_HOME:-~/.local/state}/nightshift/
     .lock/pid    # one active runner per repo/storage root
 ```
 
-Nightshift doesn't install itself into your project, edit `.gitignore`, or create a
+Lamplight doesn't install itself into your project, edit `.gitignore`, or create a
 `WORKFLOW.md`. The caller's checkout is not used for implementation. Unsaved local
 changes are not copied into the workspace; work starts from the remote repository.
 Workspaces persist for recovery; **there is no automatic deletion** of old clones.
@@ -126,7 +125,7 @@ Agent text streams to the terminal and pi sessions are retained externally.
   prohibit merges/deploys, but prompts are not permission enforcement. Restrict
   credentials and use branch protection for hard controls.
 - Triage and issue-generating idle QA are off unless explicitly enabled. Watch
-  inspects every nightshift PR each pass; increase `--interval` to reduce cost.
+  inspects every lamplight PR each pass; increase `--interval` to reduce cost.
 - Doctor without `--model` does not validate provider credentials, and dry-run
   does not verify model readiness. Run `pi` to configure `/login` and `/model`.
 - GitHub + pi only. No daemon, parallel agents, tracker adapters, automatic
@@ -137,7 +136,7 @@ Agent text streams to the terminal and pi sessions are retained externally.
 ```sh
 npm test
 npm pack --dry-run
-node bin/nightshift.js --help
+node bin/lamplight.js --help
 ```
 
 No install/build step is required for development. Tests use Node's built-in test
@@ -145,7 +144,7 @@ runner, real temporary Git repositories, and local gh/pi doubles; they do not ma
 GitHub changes or spend model tokens. CI tests Linux/macOS on Node 22.19 and 24,
 including launching the packed executable through npm.
 
-Maintainer release (after resolving the npm package name):
+Maintainer release:
 
 ```sh
 npm login
@@ -158,10 +157,10 @@ files ship.
 
 ## Origin
 
-Nightshift grew out of a small Bash script for running GitHub issues through pi.
+Lamplight grew out of a small Bash script for running GitHub issues through pi.
 Its orchestration idea is inspired by **[OpenAI Symphony](https://github.com/openai/symphony)**:
 turn issue-tracker work into isolated agent runs.
 
 This is an independent implementation, not an official OpenAI project or a full
 implementation of Symphony's specification. No upstream Symphony source files
-are bundled. OpenAI Symphony is Apache-2.0 licensed; nightshift is [MIT licensed](LICENSE).
+are bundled. OpenAI Symphony is Apache-2.0 licensed; lamplight is [MIT licensed](LICENSE).
