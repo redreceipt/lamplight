@@ -19,6 +19,9 @@ test('CLI parsing rejects bad input and keeps explicit issues independent of wat
   assert.equal(options(['--help']).help, true);
   assert.equal(options(['--version']).version, true);
   assert.equal(options(['--verbose']).verbose, true);
+  assert.equal(options([])['agent-timeout'], '1800');
+  assert.equal(options(['--agent-timeout', '60'])['agent-timeout'], '60');
+  for (const value of ['0', '-1', 'NaN', '1.5', '2147484']) assert.throws(() => options(['--agent-timeout', value]));
   for (const args of [['--triage'], ['--qa'], ['--interval', '0'], ['--repo', '../x']]) assert.throws(() => options(args));
   assert.deepEqual(options(['run', '2', '1', '2', '--model', 'anthropic/*sonnet*']).issues, [2, 1]);
   assert.deepEqual(options(['watch', '--label', 'bug', '--label', 'ready']).label, ['bug', 'ready']);
@@ -81,12 +84,25 @@ test('real CLI: zero-setup dry run, pi-managed sessions and temporary workspace/
     `);
     script('pi', `
       const { appendFileSync } = require('node:fs');
-      if (process.argv[2] === '--version') console.log('test');
+      const { spawn } = require('node:child_process');
+      function hang() {
+        appendFileSync(process.env.LAMPLIGHT_TEST_HANG, process.pid+'\\n');
+        if (process.argv[2]?.startsWith('--hung-') || process.env.LAMPLIGHT_TEST_IGNORE_SIGNALS) {
+          process.on('SIGINT', () => {});
+          process.on('SIGTERM', () => {});
+        }
+        if (process.argv[2] === '--hung-grandchild') console.log('Descendants ready');
+        else spawn(process.execPath, [__filename, process.argv[2] === '--hung-tool' ? '--hung-grandchild' : '--hung-tool'], {detached:true,stdio:'inherit'});
+        setInterval(() => {}, 1000);
+      }
+      if (process.argv[2]?.startsWith('--hung-')) hang();
+      else if (process.argv[2] === '--version') console.log('test');
       else {
         appendFileSync(process.env.LAMPLIGHT_TEST_LOG, JSON.stringify({args:process.argv.slice(2),cwd:process.cwd()})+'\\n');
         console.log('Agent output sentinel');
         console.error('Agent diagnostic sentinel');
-        process.exit(Number(process.env.LAMPLIGHT_TEST_PI_EXIT || 0));
+        if (process.env.LAMPLIGHT_TEST_HANG) hang();
+        else process.exit(Number(process.env.LAMPLIGHT_TEST_PI_EXIT || 0));
       }
     `);
     const run = (args, extra = {}, entry = cli) => spawnSync(process.execPath, [entry, ...args], { cwd: checkout, env: { ...env, ...extra }, encoding: 'utf8', timeout: 20000 });
@@ -234,6 +250,42 @@ test('real CLI: zero-setup dry run, pi-managed sessions and temporary workspace/
     result = run(['run', '4', '--workspace-root', persistent]);
     assert.equal(result.status, 0, result.stderr);
     assert.equal(workspacePath(result.stdout), persistentRoot);
+    for (const signal of [undefined, 'SIGINT', 'SIGTERM']) {
+      const pidsFile = join(dir, `hung-${signal || 'timeout'}`);
+      const output = await new Promise((done, fail) => {
+        const child = spawn(process.execPath, [cli, 'run', '5', '6', '--agent-timeout', signal ? '60' : '1'], {
+          cwd: checkout, env: { ...env, LAMPLIGHT_TEST_HANG: pidsFile, LAMPLIGHT_TEST_IGNORE_SIGNALS: signal === 'SIGINT' ? '1' : '' }, stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        let output = '', stopping = false;
+        const timer = setTimeout(() => child.kill('SIGKILL'), 15000);
+        child.stdout.on('data', chunk => {
+          output += chunk;
+          if (signal && !stopping && output.includes('Descendants ready')) {
+            stopping = true;
+            child.kill(signal);
+          }
+        });
+        child.stderr.on('data', chunk => { output += chunk; });
+        child.on('error', fail);
+        child.on('close', code => {
+          clearTimeout(timer);
+          try {
+            assert.equal(code, signal === 'SIGINT' ? 130 : signal === 'SIGTERM' ? 143 : 1, output);
+            done(output);
+          } catch (err) { fail(err); }
+        });
+      });
+      const pids = readFileSync(pidsFile, 'utf8').trim().split('\n').map(Number);
+      assert.equal(pids.length, 3, 'agent, detached tool and detached grandchild all started');
+      const running = execFileSync('ps', ['-eo', 'pid=,stat='], { encoding: 'utf8' }).trim().split('\n')
+        .map(row => row.trim().split(/\s+/)).filter(([pid, state]) => pids.includes(Number(pid)) && !state.startsWith('Z'));
+      assert.deepEqual(running, [], 'no agent/tool processes survive timeout or interruption');
+      assert.match(output, signal ? /Session interrupted/ : /pi timed out after 1s/);
+      assert.match(output, /0 agent runs finished/);
+      assert.doesNotMatch(output, /Running #6/);
+      assert.equal(existsSync(join(workspacePath(output), 'GH-5', '.git')), true);
+      assert.equal(existsSync(lockPath(output)), false);
+    }
     mkdirSync(repoLock);
     writeFileSync(join(repoLock, 'pid'), '123\n');
     result = run(['run', '4']);
@@ -243,6 +295,11 @@ test('real CLI: zero-setup dry run, pi-managed sessions and temporary workspace/
     assert.deepEqual(readdirSync(stateRoot), ['logs']);
     assert.equal(git('status', '--porcelain').toString(), before);
   } finally {
+    for (const file of readdirSync(dir).filter(name => name.startsWith('hung-'))) {
+      for (const pid of readFileSync(join(dir, file), 'utf8').trim().split('\n').map(Number)) {
+        try { process.kill(-pid, 'SIGKILL'); } catch (err) { if (err.code !== 'ESRCH') throw err; }
+      }
+    }
     rmSync(dir, { recursive: true, force: true });
   }
 });

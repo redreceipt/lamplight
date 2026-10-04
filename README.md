@@ -66,6 +66,7 @@ npx lamplight run 72 --workflow ~/.config/lamplight/my-workflow.md
 | `-m, --model pattern` | Pi's configured model; passed directly to pi when provided. |
 | `--label name` | Filter the loop's work queue. Repeat for AND matching. Explicit `run` issues cannot be combined with label filters. |
 | `--interval seconds` | 300; delay after **every** loop pass, including successful work. |
+| `--agent-timeout seconds` | 1800 (30 minutes); hard deadline for each pi run, including tool execution. Timeout stops the runner and preserves recovery work. |
 | `--workflow file` | Replace the bundled implementation/PR prompt with your own external Markdown file. Not interpreted as YAML or a template. |
 | `--workspace-root dir` | Use persistent external workspaces instead of a fresh OS temp directory. Host/owner/repo namespaces are appended. Must be outside the current checkout. |
 | `--dry-run` | Read GitHub and print one pass's plan. Never invokes pi, clones, locks, or writes runner state. A triage plan cannot predict which labels pi would change. |
@@ -138,7 +139,10 @@ changes are not copied into the workspace; work starts from the remote repositor
 Paths and transcripts can contain private source code or issue data; do not publish
 them indiscriminately.
 
-Ctrl-C/SIGTERM stops the active child and releases the runner lock. The printed
+Ctrl-C/SIGTERM and agent timeouts stop the active child's process tree, including
+pi's detached tool shells, before releasing the runner lock. Processes get one
+second to exit before SIGKILL. Process-tree inspection requires the standard `ps`
+command on macOS/Linux. The printed
 `Lock:` path is deterministic for the OS user and GitHub host/owner/repo, independent
 of workspace location. After a crash or SIGKILL, inspect its `pid` file and confirm
 no runner/agent is active before removing that stale lock. Don't remove active locks
