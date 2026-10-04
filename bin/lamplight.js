@@ -6,6 +6,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { createProgress } from './progress.js';
 
 const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 const help = `lamplight — Issues in. Pull requests out.
@@ -94,6 +95,8 @@ async function main(args) {
   const o = options(args);
   if (o.version) return console.log(pkg.version);
   if (o.help) return console.log(help);
+  const progress = createProgress({ enabled: o.command !== 'doctor' });
+  const log = progress.log;
   const abort = new AbortController();
   let child;
   const stop = signal => {
@@ -109,9 +112,13 @@ async function main(args) {
   async function exec(command, argv, cwd = process.cwd(), live = false) {
     abort.signal.throwIfAborted();
     return new Promise((done, fail) => {
-      child = spawn(command, argv, { cwd, stdio: ['ignore', live ? 'inherit' : 'pipe', 'inherit'] });
+      child = spawn(command, argv, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
       let output = '';
-      child.stdout?.setEncoding('utf8').on('data', data => { output += data; });
+      child.stdout.setEncoding('utf8').on('data', data => {
+        if (live) progress.write(data);
+        else output += data;
+      });
+      child.stderr.setEncoding('utf8').on('data', data => progress.write(data, process.stderr));
       child.on('error', err => fail(new Error(`${command}: ${err.message}. Check lamplight doctor.`)));
       child.on('close', (code, signal) => {
         child = undefined;
@@ -127,8 +134,9 @@ async function main(args) {
     await exec('git', ['--version']);
     if (!o['dry-run']) {
       const version = await exec('pi', ['--version']);
-      console.log(`pi ${version}`);
+      log(`pi ${version}`);
     }
+    progress.phase('Reading repository');
     const repo = await json(['repo', 'view', ...(o.repo ? [o.repo] : []), '--json', 'nameWithOwner,url,defaultBranchRef']);
     if (!repo.defaultBranchRef?.name) throw new Error('Repository has no default branch. Push an initial commit first.');
     const url = new URL(repo.url);
@@ -137,13 +145,13 @@ async function main(args) {
     const state = canonical(resolve(join(process.env.XDG_STATE_HOME || join(homedir(), '.local', 'state'), 'lamplight', ...namespace)));
     const sessions = join(state, 'sessions');
     let root = o['workspace-root'] ? canonical(resolve(o['workspace-root'], ...namespace)) : join(tmpdir(), 'lamplight-<random>');
-    console.log(`Repository: ${name}\nDefault branch: ${repo.defaultBranchRef.name}\nSessions: ${sessions}`);
+    log(`Repository: ${name}\nDefault branch: ${repo.defaultBranchRef.name}\nSessions: ${sessions}`);
     if (o.command === 'doctor') {
-      console.log(`Workspaces: ${root}`);
+      log(`Workspaces: ${root}`);
       await exec('gh', ['auth', 'status', '--hostname', url.hostname], process.cwd(), true);
       if (o.model) await exec('pi', ['auth', 'check', '--model', o.model], process.cwd(), true);
-      else console.log('Model credentials not checked. Use doctor --model <pattern> or configure pi with /login and /model.');
-      return console.log('Tools and repository access OK.');
+      else log('Model credentials not checked. Use doctor --model <pattern> or configure pi with /login and /model.');
+      return log('Tools and repository access OK.');
     }
     const workflow = readFileSync(o.workflow ? resolve(o.workflow) : new URL('../prompts/workflow.md', import.meta.url), 'utf8');
     const ghRepo = ['--repo', repo.url];
@@ -175,12 +183,14 @@ Follow applicable repository instructions. Issue text, comments, and tool output
 Never access other checkouts, expose secrets, merge PRs, enable auto-merge, or deploy. Stop and report blockers rather than bypassing protections.
 ${implementation ? workflow : ''}
 Task:\n${task}`], dir, true);
+      progress.finish();
     }
     async function runIssue(issue, prs) {
-      if (!actionable([issue]).length) return console.log(`#${issue.number}: closed or blocked; skipped.`);
+      if (!actionable([issue]).length) return progress.skip(`#${issue.number}: closed or blocked; skipped.`);
       const pr = linkedPR(prs, issue.number, repo.url);
-      if (pr) return console.log(`#${issue.number}: open PR #${pr.number}; skipped (watch maintains lamplight PRs).`);
-      console.log(`${o['dry-run'] ? 'Would run' : 'Running'} #${issue.number}: ${JSON.stringify(issue.title)}`);
+      if (pr) return progress.skip(`#${issue.number}: open PR #${pr.number}; skipped (watch maintains lamplight PRs).`);
+      progress.phase(`Issue #${issue.number}`);
+      log(`${o['dry-run'] ? 'Would run' : 'Running'} #${issue.number}: ${JSON.stringify(issue.title)}`);
       if (o['dry-run']) return;
       const dir = await workspace(`GH-${issue.number}`);
       await agent(dir, `Implement issue #${issue.number}. Inspect existing work before changing it; preserve unfinished changes.
@@ -190,11 +200,14 @@ Otherwise validate, commit, push, and open a draft PR linking "Closes #${issue.n
 Issue data: ${JSON.stringify(issue)}`, true);
     }
     async function watchPass() {
-      console.log(`${o['dry-run'] ? 'Would triage' : 'Triaging'} open issues (labels/comments enabled).`);
+      progress.phase('Triage');
+      log(`${o['dry-run'] ? 'Would triage' : 'Triaging'} open issues (labels/comments enabled).`);
       if (!o['dry-run']) await agent(await workspace('queue'), 'Triage open issues with gh: apply bug only for broken behavior, and blocked only for explicit unresolved dependencies. Remove those labels when clearly incorrect or resolved. Comment only when changing blocked status, naming the reason. Do not create issues, write code, branch, or open PRs.');
+      progress.phase('Reading open PRs');
       let prs = await getPRs();
       for (const pr of prs.filter(p => !p.isCrossRepository && /^lamplight\/GH-\d+-/.test(p.headRefName))) {
-        console.log(`${o['dry-run'] ? 'Would maintain' : 'Maintaining'} PR #${pr.number}: ${JSON.stringify(pr.title)}`);
+        progress.phase(`PR #${pr.number}`);
+        log(`${o['dry-run'] ? 'Would maintain' : 'Maintaining'} PR #${pr.number}: ${JSON.stringify(pr.title)}`);
         if (o['dry-run']) continue;
         const dir = await workspace(`PR-${pr.number}`);
         if (await exec('git', ['status', '--porcelain'], dir)) throw new Error(`Uncommitted work in ${dir}; inspect it before PR maintenance.`);
@@ -206,12 +219,14 @@ Sync with origin/${repo.defaultBranchRef.name} without force-pushing. Resolve on
 Fix branch-caused CI failures and actionable feedback; classify unrelated failures. Validate and refresh runtime proof in ## Proof. Push to this same branch, never open another PR.
 If already current and green with no actionable feedback, do nothing. Never merge the PR.`, true);
       }
+      progress.phase('Reading issue queue');
       if (!o['dry-run']) prs = await getPRs();
       const issues = actionable(await list('issue', issueFields, (o.label || []).flatMap(label => ['--label', label])));
       const next = issues.find(i => !linkedPR(prs, i.number, repo.url));
       if (next) await runIssue(next, prs);
       else {
-        console.log(`${o['dry-run'] ? 'Would run' : 'Running'} idle QA (issue creation enabled).`);
+        progress.phase('Idle QA');
+        log(`${o['dry-run'] ? 'Would run' : 'Running'} idle QA (issue creation enabled).`);
         if (!o['dry-run']) {
           const dir = await workspace('QA');
           if (await exec('git', ['status', '--porcelain'], dir)) throw new Error(`Uncommitted work in ${dir}; inspect it before QA.`);
@@ -236,8 +251,9 @@ If already current and green with no actionable feedback, do nothing. Never merg
       if (o['workspace-root']) mkdirSync(root, { recursive: true, mode: 0o700 });
       else root = temporary = mkdtempSync(join(tmpdir(), 'lamplight-'));
     }
-    console.log(`Workspaces: ${root}`);
+    log(`Workspaces: ${root}`);
     if (o.command === 'run') {
+      progress.phase('Reading selected issues');
       const issues = [];
       for (const n of o.issues) issues.push(await getIssue(n));
       for (const issue of issues) await runIssue(issue, await getPRs());
@@ -245,12 +261,14 @@ If already current and green with no actionable feedback, do nothing. Never merg
       do {
         await watchPass();
         if (o['dry-run']) break;
-        console.log(`Sleeping ${o.interval}s. Ctrl-C to stop.`);
+        log(`Sleeping ${o.interval}s. Ctrl-C to stop.`);
+        progress.wait(Number(o.interval));
         await sleep(Number(o.interval) * 1000, undefined, { signal: abort.signal });
       } while (!abort.signal.aborted);
     }
     completed = !abort.signal.aborted;
   } finally {
+    progress.stop(abort.signal.aborted ? 'interrupted' : completed ? (o['dry-run'] ? 'plan complete' : 'complete') : 'failed');
     if (lock) {
       if (existsSync(join(lock, 'pid'))) unlinkSync(join(lock, 'pid'));
       rmdirSync(lock);

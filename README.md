@@ -132,6 +132,21 @@ that stale lock. Don't run concurrent instances with different state directories
 the same repo. Errors exit nonzero rather than continuing on the wrong branch.
 Agent text streams to the terminal and pi sessions are retained externally.
 
+### Live session progress
+
+Interactive terminals show a self-updating status line with elapsed session time,
+the current phase (triage, PR maintenance, issue work, or QA), finished agent runs,
+and skipped explicit-run issues. Between passes it counts down to the next pass.
+Completion lines stay in scrollback alongside agent output, and exit prints a summary,
+including on errors or Ctrl-C. Counts span the current invocation, not prior sessions;
+“finished” means the agent returned successfully, **not** that a PR was created or
+an issue resolved. Dry-run plans never count as finished agent work.
+
+The status line yields to streaming output, fits the terminal width, and uses no
+alternate screen or hidden cursor. Redirecting either output stream, or setting
+`TERM=dumb`, disables animation and cursor controls; ordinary logs and summaries
+remain. No terminal UI dependencies are needed.
+
 ## Safety and scope
 
 - **This is an autonomous coding agent, not a sandbox.** Clones separate working
