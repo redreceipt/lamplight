@@ -164,16 +164,33 @@ runner, real temporary Git repositories, and local gh/pi doubles; they do not ma
 GitHub changes or spend model tokens. CI tests Linux/macOS on Node 22.19 and 24,
 including launching the packed executable through npm.
 
-Maintainer release:
+### Automated releases
 
-```sh
-npm login
-npm publish --access public
-```
+Use [Conventional Commits](https://www.conventionalcommits.org/) for commits merged
+into `main` (including squash-merge titles):
 
-Bump the package version before subsequent releases. Publish only after tests
-and a real CLI smoke run, and inspect `npm pack --dry-run` to ensure no private
-files ship.
+- `fix: ...` releases a patch.
+- `feat: ...` releases a minor.
+- `feat!: ...`, `fix!: ...`, or a `BREAKING CHANGE:` footer releases a major.
+- `docs:`, `chore:`, and `test:` do not release on their own.
+
+Every push to `main` runs the full CI matrix. After it passes,
+[semantic-release](https://github.com/semantic-release/semantic-release) calculates
+the version from commits since the last `v*` release tag, updates the package in
+CI, publishes to npm, and creates a GitHub Release with generated notes and the
+package tarball. Git tags—not the source `package.json` version—track releases;
+there are no version-bump commits or manual publishing steps.
+
+The npm package's trusted publisher must authorize `redreceipt/lamplight` and
+`release.yml`. Publishing uses GitHub's OIDC identity, with automatic provenance;
+no npm token or per-release OTP is required. Only the publish job has write
+permissions. Release runs are serialized and cannot cancel an active publish.
+
+The **Release** workflow can also be dispatched on `main` to retry failures before
+tag creation. If a publish fails after creating its tag, inspect npm and GitHub
+state before recovery; rerunning alone does not republish that version.
+Capture real CLI runtime proof before merging behavior changes; CI and generated
+release notes do not substitute for that proof.
 
 ## Origin
 
