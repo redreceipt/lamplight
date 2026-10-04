@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -27,6 +27,7 @@ Options:
   --workflow <file>      Replace bundled implementation instructions
   --workspace-root <dir> Reuse external workspaces; repo namespaces are appended
   --dry-run              Read GitHub and print one plan; no agent or workspaces
+  --verbose              Stream output instead of the terminal dashboard
   -h, --help             Show this help without checking tools or credentials
   -v, --version          Show version
 
@@ -58,7 +59,7 @@ export function options(args) {
       repo: { type: 'string' }, model: { type: 'string', short: 'm' },
       label: { type: 'string', multiple: true }, interval: { type: 'string', default: '300' },
       workflow: { type: 'string' }, 'workspace-root': { type: 'string' },
-      'dry-run': { type: 'boolean' },
+      'dry-run': { type: 'boolean' }, verbose: { type: 'boolean' },
     },
   });
   if (v.help || v.version) return v;
@@ -97,7 +98,7 @@ async function main(args) {
   const o = options(args);
   if (o.version) return console.log(pkg.version);
   if (o.help) return console.log(help);
-  const progress = createProgress({ enabled: o.command !== 'doctor' });
+  const progress = createProgress({ enabled: o.command !== 'doctor', dashboard: !o.verbose && !o['dry-run'] });
   const log = progress.log;
   const abort = new AbortController();
   let child;
@@ -143,7 +144,9 @@ async function main(args) {
     if (!repo.defaultBranchRef?.name) throw new Error('Repository has no default branch. Push an initial commit first.');
     const url = new URL(repo.url);
     const name = repo.nameWithOwner;
+    progress.repository(name);
     const namespace = [url.hostname, ...name.toLowerCase().split('/')];
+    const logs = canonical(resolve(join(process.env.XDG_STATE_HOME || join(homedir(), '.local', 'state'), 'lamplight', ...namespace, 'logs')));
     const lockPath = join(tmpdir(), `lamplight-${process.getuid()}-${createHash('sha256').update(namespace.join('/')).digest('hex')}.lock`);
     let root = o['workspace-root'] ? canonical(resolve(o['workspace-root'], ...namespace)) : join(tmpdir(), 'lamplight-<random>');
     log(`Repository: ${name}\nDefault branch: ${repo.defaultBranchRef.name}\nSessions: managed by pi\nLock: ${lockPath}`);
@@ -189,7 +192,7 @@ Task:\n${task}`], dir, true);
       if (!actionable([issue]).length) return progress.skip(`#${issue.number}: closed or blocked; skipped.`);
       const pr = linkedPR(prs, issue.number, repo.url);
       if (pr) return progress.skip(`#${issue.number}: open PR #${pr.number}; skipped (watch maintains lamplight PRs).`);
-      progress.phase(`Issue #${issue.number}`);
+      progress.phase(`Issue #${issue.number}`, issue.title);
       log(`${o['dry-run'] ? 'Would run' : 'Running'} #${issue.number}: ${JSON.stringify(issue.title)}`);
       if (o['dry-run']) return;
       const dir = await workspace(`GH-${issue.number}`);
@@ -206,7 +209,7 @@ Issue data: ${JSON.stringify(issue)}`, true);
       progress.phase('Reading open PRs');
       let prs = await getPRs();
       for (const pr of prs.filter(p => !p.isCrossRepository && /^lamplight\/GH-\d+-/.test(p.headRefName))) {
-        progress.phase(`PR #${pr.number}`);
+        progress.phase(`Maintaining PR #${pr.number}`, pr.title);
         log(`${o['dry-run'] ? 'Would maintain' : 'Maintaining'} PR #${pr.number}: ${JSON.stringify(pr.title)}`);
         if (o['dry-run']) continue;
         const dir = await workspace(`PR-${pr.number}`);
@@ -239,13 +242,15 @@ If already current and green with no actionable feedback, do nothing. Never merg
 
     if (!o['dry-run']) {
       const checkout = await exec('git', ['rev-parse', '--show-toplevel']).catch(() => '');
-      if (checkout && o['workspace-root'] && (root === canonical(checkout) || root.startsWith(`${canonical(checkout)}/`))) throw new Error('Runner storage must be outside the current checkout.');
+      if (checkout && [logs, ...(o['workspace-root'] ? [root] : [])].some(path => path === canonical(checkout) || path.startsWith(`${canonical(checkout)}/`))) throw new Error('Runner storage must be outside the current checkout.');
       try { mkdirSync(lockPath, { mode: 0o700 }); } catch (err) {
         if (err.code !== 'EEXIST') throw err;
         throw new Error(`Runner lock exists: ${lockPath}. Stop the other runner; if stale, inspect its pid file before removing the lock.`);
       }
       lock = lockPath;
       writeFileSync(join(lock, 'pid'), `${process.pid}\n`);
+      mkdirSync(logs, { recursive: true, mode: 0o700 });
+      progress.logTo(join(logs, `${Date.now()}-${process.pid}.log`));
       if (o['workspace-root']) mkdirSync(root, { recursive: true, mode: 0o700 });
       else root = temporary = mkdtempSync(join(tmpdir(), 'lamplight-'));
     }

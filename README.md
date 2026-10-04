@@ -69,6 +69,7 @@ npx lamplight run 72 --workflow ~/.config/lamplight/my-workflow.md
 | `--workflow file` | Replace the bundled implementation/PR prompt with your own external Markdown file. Not interpreted as YAML or a template. |
 | `--workspace-root dir` | Use persistent external workspaces instead of a fresh OS temp directory. Host/owner/repo namespaces are appended. Must be outside the current checkout. |
 | `--dry-run` | Read GitHub and print one pass's plan. Never invokes pi, clones, locks, or writes runner state. A triage plan cannot predict which labels pi would change. |
+| `--verbose` | Stream agent and command output instead of showing the terminal dashboard. |
 
 Each loop automatically triages **all open issues**, even with `--label`: it
 maintains `bug`/`blocked` labels and comments when blocked status changes. After
@@ -109,6 +110,9 @@ instructions, not the runner's top-level safety instructions or triage/QA tasks.
 
 ~/.pi/agent/sessions/
   ...          # pi's default transcript storage, grouped by workspace path
+
+${XDG_STATE_HOME:-~/.local/state}/lamplight/github.com/owner/repo/
+  logs/        # private per-run output logs (agent text and command diagnostics)
 ```
 
 Each run creates a private, unique workspace directory using Node's `os.tmpdir()`
@@ -116,9 +120,9 @@ and `fs.mkdtemp()` (respecting the OS temp configuration, such as `TMPDIR`).
 Successful runs delete that directory. Errors and Ctrl-C/SIGTERM retain it and
 print its path for recovery; OS cleanup may eventually remove temp directories.
 Pi manages session storage itself; its environment/settings overrides still apply.
-Lamplight does not pass `--session-dir` or create a persistent state directory.
+Lamplight does not pass `--session-dir`; only run logs use its persistent storage.
 Sessions normally survive workspace cleanup and are grouped by each temporary
-checkout's path. Dry-run and doctor never create workspaces or locks. There is no
+checkout's path. Dry-run and doctor never create workspaces, locks, or logs. There is no
 workspace reuse between runs by default.
 
 Use `--workspace-root` for persistent, reusable clones; these are never automatically
@@ -140,22 +144,27 @@ of workspace location. After a crash or SIGKILL, inspect its `pid` file and conf
 no runner/agent is active before removing that stale lock. Don't remove active locks
 or run concurrent instances with different OS temp directories for the same repo.
 Errors exit nonzero rather than continuing on the wrong branch.
-Agent text streams to the terminal and pi sessions are retained externally.
+Agent text and command diagnostics are saved in private run logs; pi sessions are
+retained externally. Logs are not automatically pruned.
 
 ### Live session progress
 
-Interactive terminals show a self-updating status line with elapsed session time,
-the current phase (triage, PR maintenance, issue work, or QA), finished agent runs,
-and skipped explicit-run issues. Between passes it counts down to the next pass.
-Completion lines stay in scrollback alongside agent output, and exit prints a summary,
-including on errors or Ctrl-C. Counts span the current invocation, not prior sessions;
-“finished” means the agent returned successfully, **not** that a PR was created or
-an issue resolved. Dry-run plans never count as finished agent work.
+Interactive terminals show a fixed, non-scrolling dashboard: repository, elapsed
+time, current phase and issue/PR title, finished agent runs, skipped explicit-run
+issues, and the previous completion or skip. Between passes it counts down to the
+next pass. Agent text and git output go to a durable run log, not the dashboard.
 
-The status line yields to streaming output, fits the terminal width, and uses no
-alternate screen or hidden cursor. Redirecting either output stream, or setting
-`TERM=dumb`, disables animation and cursor controls; ordinary logs and summaries
-remain. No terminal UI dependencies are needed.
+The dashboard uses the terminal's alternate screen, fits its width and height,
+and restores the screen and cursor on exit, including errors and Ctrl-C. Exit
+prints a summary and the run-log path, plus a recovery path when temporary
+workspaces are retained. Failures remain visible after the dashboard closes.
+Counts span the current invocation, not prior sessions; “finished” means the
+agent returned successfully, **not** that a PR was created or an issue resolved.
+
+Use `--verbose` for streaming output. Redirecting either output stream, setting
+`TERM=dumb`, running `doctor`, or using `--dry-run` also keeps output plain, with
+no cursor controls. Dry runs never count as finished agent work or write logs.
+No terminal UI dependencies are needed.
 
 ## Safety and scope
 
