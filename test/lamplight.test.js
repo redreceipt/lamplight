@@ -39,7 +39,7 @@ test('PR links respect repository and issue-number boundaries', () => {
   }
 });
 
-test('real CLI: zero-setup dry run, multiple issues, temporary workspace lifecycle and durable state', async () => {
+test('real CLI: zero-setup dry run, pi-managed sessions and temporary workspace/lock lifecycle', async () => {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'lamplight-test-')));
   try {
     const bin = join(dir, 'bin');
@@ -83,13 +83,12 @@ test('real CLI: zero-setup dry run, multiple issues, temporary workspace lifecyc
       if (process.argv[2] === '--version') console.log('test');
       else {
         appendFileSync(process.env.LAMPLIGHT_TEST_LOG, JSON.stringify({args:process.argv.slice(2),cwd:process.cwd()})+'\\n');
-        appendFileSync(require('node:path').join(process.argv[process.argv.indexOf('--session-dir') + 1], 'test.jsonl'), 'session sentinel\\n');
         process.exit(Number(process.env.LAMPLIGHT_TEST_PI_EXIT || 0));
       }
     `);
     const run = (args, extra = {}, entry = cli) => spawnSync(process.execPath, [entry, ...args], { cwd: checkout, env: { ...env, ...extra }, encoding: 'utf8', timeout: 20000 });
-    const stateRoot = join(state, 'lamplight', 'github.com', 'example', 'project');
     const workspacePath = output => output.match(/^Workspaces: (.+)$/m)[1];
+    const lockPath = output => output.match(/^Lock: (.+)$/m)[1];
     const before = git('status', '--porcelain').toString();
     symlinkSync(cli, join(bin, 'lamplight'));
     let result = run(['--help'], {}, join(bin, 'lamplight'));
@@ -102,6 +101,9 @@ test('real CLI: zero-setup dry run, multiple issues, temporary workspace lifecyc
     result = run(['doctor']);
     assert.equal(result.status, 0, result.stderr);
     assert.equal(existsSync(workspacePath(result.stdout)), false);
+    const repoLock = lockPath(result.stdout);
+    assert.equal(repoLock.startsWith(join(temp, `lamplight-${process.getuid()}-`)), true);
+    assert.equal(existsSync(repoLock), false);
     assert.equal(existsSync(state), false);
     result = run(['run', '1', '2', '--dry-run']);
     assert.equal(result.status, 0, result.stderr);
@@ -120,6 +122,7 @@ test('real CLI: zero-setup dry run, multiple issues, temporary workspace lifecyc
     assert.match(result.stdout, /Would triage/);
     assert.match(result.stdout, /Would maintain PR #99/);
     assert.match(result.stdout, /Would run idle QA/);
+    assert.equal(existsSync(repoLock), false);
     assert.equal(existsSync(state), false);
     assert.equal(existsSync(log), false);
     result = run(['run', '1', '--workspace-root', join(checkout, 'state')]);
@@ -143,12 +146,13 @@ test('real CLI: zero-setup dry run, multiple issues, temporary workspace lifecyc
       assert.equal(call.cwd, join(root, `GH-${index + 1}`));
       assert.ok(call.args.includes('some/model'));
       assert.ok(call.args.includes('--no-approve'));
-      assert.equal(call.args[call.args.indexOf('--session-dir') + 1], join(stateRoot, 'sessions'));
+      assert.equal(call.args.includes('--session-dir'), false);
+      assert.equal(call.args.includes('--no-session'), false);
       assert.match(call.args.at(-1), /Default branch: trunk/);
       assert.match(call.args.at(-1), /New PRs start as drafts/);
     }
-    assert.equal(readFileSync(join(stateRoot, 'sessions', 'test.jsonl'), 'utf8'), 'session sentinel\nsession sentinel\n');
-    assert.equal(existsSync(join(stateRoot, '.lock')), false);
+    assert.equal(existsSync(state), false, 'lamplight must not create persistent state');
+    assert.equal(existsSync(repoLock), false);
     const workflow = join(dir, 'custom.md');
     writeFileSync(workflow, 'Custom workflow sentinel');
     result = run(['run', '3', '--workflow', workflow], { LAMPLIGHT_TEST_PI_EXIT: '9' });
@@ -161,7 +165,7 @@ test('real CLI: zero-setup dry run, multiple issues, temporary workspace lifecyc
     assert.notEqual(failedRoot, root);
     assert.equal(existsSync(join(failedRoot, 'GH-3', '.git')), true);
     assert.ok(result.stderr.includes(`Workspaces kept for recovery: ${failedRoot}`));
-    assert.equal(existsSync(join(stateRoot, '.lock')), false);
+    assert.equal(existsSync(repoLock), false);
     result = run(['watch'], { LAMPLIGHT_TEST_PRS: JSON.stringify([pr('Closes #1')]) });
     assert.equal(result.status, 1);
     assert.match(result.stderr, /gh exited with 7/);
@@ -174,11 +178,22 @@ test('real CLI: zero-setup dry run, multiple issues, temporary workspace lifecyc
           cwd: checkout, env: { ...env, LAMPLIGHT_TEST_URL: pathToFileURL(checkout).href, LAMPLIGHT_TEST_ISSUES: JSON.stringify(issues) },
           stdio: ['ignore', 'pipe', 'pipe'],
         });
-        let output = '';
+        let output = '', stopping = false;
         const timeout = setTimeout(() => child.kill('SIGKILL'), 20000);
         child.stdout.on('data', chunk => {
           output += chunk;
-          if (output.includes('Sleeping 300s.')) child.kill('SIGTERM');
+          if (!stopping && output.includes('Sleeping 300s.')) {
+            stopping = true;
+            const contender = run(['run', '1', '--workspace-root', join(dir, 'contender')], {
+              LAMPLIGHT_TEST_URL: pathToFileURL(checkout).href, XDG_STATE_HOME: join(dir, 'other-state'),
+            });
+            try {
+              assert.equal(contender.status, 1);
+              assert.match(contender.stderr, /Runner lock exists/);
+              assert.equal(readFileSync(join(lockPath(output), 'pid'), 'utf8'), `${child.pid}\n`);
+            } catch (err) { fail(err); }
+            child.kill('SIGTERM');
+          }
         });
         child.stderr.on('data', chunk => { output += chunk; });
         child.on('error', fail);
@@ -197,7 +212,8 @@ test('real CLI: zero-setup dry run, multiple issues, temporary workspace lifecyc
       const interruptedRoot = workspacePath(output);
       assert.equal(existsSync(join(interruptedRoot, issues.length ? 'GH-1' : 'QA', '.git')), true);
       assert.ok(output.includes(`Workspaces kept for recovery: ${interruptedRoot}`));
-      assert.equal(existsSync(join(state, 'lamplight', 'example', 'project', '.lock')), false);
+      assert.notEqual(lockPath(output), repoLock, 'different hosts have separate locks');
+      assert.equal(existsSync(lockPath(output)), false);
     }
     const persistent = join(dir, 'persistent');
     result = run(['run', '4', '--workspace-root', persistent]);
@@ -208,12 +224,13 @@ test('real CLI: zero-setup dry run, multiple issues, temporary workspace lifecyc
     result = run(['run', '4', '--workspace-root', persistent]);
     assert.equal(result.status, 0, result.stderr);
     assert.equal(workspacePath(result.stdout), persistentRoot);
-    mkdirSync(join(stateRoot, '.lock'));
-    writeFileSync(join(stateRoot, '.lock', 'pid'), '123\n');
+    mkdirSync(repoLock);
+    writeFileSync(join(repoLock, 'pid'), '123\n');
     result = run(['run', '4']);
     assert.equal(result.status, 1);
     assert.match(result.stderr, /Runner lock exists/);
-    assert.equal(readFileSync(join(stateRoot, '.lock', 'pid'), 'utf8'), '123\n');
+    assert.equal(readFileSync(join(repoLock, 'pid'), 'utf8'), '123\n');
+    assert.equal(existsSync(state), false);
     assert.equal(git('status', '--porcelain').toString(), before);
   } finally {
     rmSync(dir, { recursive: true, force: true });

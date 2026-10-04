@@ -46,7 +46,7 @@ It does not change global npm settings. Lamplight has no Git dependencies.
 | *(no command)* | Triage, maintain open lamplight PRs, work one queued issue or run idle QA, sleep, repeat. |
 | `run 72 81` | Process each explicit issue once, in order, then exit. No triage or idle QA. |
 | `watch` | Optional alias for the default loop; not required. |
-| `doctor` | Check executables, GitHub auth/access, repo, and state path. With `--model`, also check that model's auth. |
+| `doctor` | Check executables, GitHub auth/access, repo, and storage locations. With `--model`, also check that model's auth. |
 | `--help` | Full usage, examples, defaults, prerequisites, and safety notes. No credentials required. |
 | `--version` | Print the package version. |
 
@@ -104,21 +104,29 @@ instructions, not the runner's top-level safety instructions or triage/QA tasks.
   queue/       # triage checkout
   QA/          # idle-QA checkout (created when the queue is empty)
 
-${XDG_STATE_HOME:-~/.local/state}/lamplight/github.com/owner/repo/
-  sessions/    # durable pi transcripts, outside every checkout
-  .lock/pid    # one active runner per repo/state directory
+<OS temp directory>/lamplight-<uid>-<repo-hash>.lock/
+  pid          # one active runner per user/repo in this temp directory
+
+~/.pi/agent/sessions/
+  ...          # pi's default transcript storage, grouped by workspace path
 ```
 
 Each run creates a private, unique workspace directory using Node's `os.tmpdir()`
 and `fs.mkdtemp()` (respecting the OS temp configuration, such as `TMPDIR`).
 Successful runs delete that directory. Errors and Ctrl-C/SIGTERM retain it and
 print its path for recovery; OS cleanup may eventually remove temp directories.
-Pi sessions remain in durable storage regardless of the outcome. Dry-run and
-doctor never create workspaces. There is no workspace reuse between runs by default.
+Pi manages session storage itself; its environment/settings overrides still apply.
+Lamplight does not pass `--session-dir` or create a persistent state directory.
+Sessions normally survive workspace cleanup and are grouped by each temporary
+checkout's path. Dry-run and doctor never create workspaces or locks. There is no
+workspace reuse between runs by default.
 
 Use `--workspace-root` for persistent, reusable clones; these are never automatically
-deleted. Existing clones in the old state location are untouched; pass that storage
-base as `--workspace-root` to reuse them.
+deleted. Existing clones and transcripts under the old
+`${XDG_STATE_HOME:-~/.local/state}/lamplight/` location are untouched; pass that
+storage base as `--workspace-root` to reuse clones. Stop old runners before upgrading:
+old and new versions use different lock locations. Preserve wanted transcripts and
+unfinished clone work before removing that old Lamplight directory, not all of `~/.local`.
 
 Lamplight doesn't install itself into your project, edit `.gitignore`, or create a
 `WORKFLOW.md`. The caller's checkout is not used for implementation. Unsaved local
@@ -126,10 +134,12 @@ changes are not copied into the workspace; work starts from the remote repositor
 Paths and transcripts can contain private source code or issue data; do not publish
 them indiscriminately.
 
-Ctrl-C/SIGTERM stops the active child and releases the runner lock. After a crash
-or SIGKILL, inspect `.lock/pid` and confirm no runner/agent is active before removing
-that stale lock. Don't run concurrent instances with different state directories for
-the same repo. Errors exit nonzero rather than continuing on the wrong branch.
+Ctrl-C/SIGTERM stops the active child and releases the runner lock. The printed
+`Lock:` path is deterministic for the OS user and GitHub host/owner/repo, independent
+of workspace location. After a crash or SIGKILL, inspect its `pid` file and confirm
+no runner/agent is active before removing that stale lock. Don't remove active locks
+or run concurrent instances with different OS temp directories for the same repo.
+Errors exit nonzero rather than continuing on the wrong branch.
 Agent text streams to the terminal and pi sessions are retained externally.
 
 ### Live session progress

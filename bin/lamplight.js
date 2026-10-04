@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs';
-import { homedir, tmpdir } from 'node:os';
+import { tmpdir } from 'node:os';
+import { createHash } from 'node:crypto';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
@@ -40,7 +41,8 @@ Examples:
 Requires Node >=22.19, git, gh (authenticated), and pi (model configured).
 Supports macOS and Linux, with GitHub repositories. No repo setup files.
 Workspaces: fresh OS temp directory per run; removed only after success.
-Sessions/locks: $XDG_STATE_HOME/lamplight or ~/.local/state/lamplight, per repo.
+Sessions: managed by pi using its configured storage.
+Locks: OS temp directory, shared per user and repository.
 The loop changes labels/comments and files issues during idle QA automatically.
 Running can spend tokens, push branches, and open draft PRs. No auto-merge.
 Clones are NOT a sandbox. Use trusted repos or an isolated environment.
@@ -142,10 +144,9 @@ async function main(args) {
     const url = new URL(repo.url);
     const name = repo.nameWithOwner;
     const namespace = [url.hostname, ...name.toLowerCase().split('/')];
-    const state = canonical(resolve(join(process.env.XDG_STATE_HOME || join(homedir(), '.local', 'state'), 'lamplight', ...namespace)));
-    const sessions = join(state, 'sessions');
+    const lockPath = join(tmpdir(), `lamplight-${process.getuid()}-${createHash('sha256').update(namespace.join('/')).digest('hex')}.lock`);
     let root = o['workspace-root'] ? canonical(resolve(o['workspace-root'], ...namespace)) : join(tmpdir(), 'lamplight-<random>');
-    log(`Repository: ${name}\nDefault branch: ${repo.defaultBranchRef.name}\nSessions: ${sessions}`);
+    log(`Repository: ${name}\nDefault branch: ${repo.defaultBranchRef.name}\nSessions: managed by pi\nLock: ${lockPath}`);
     if (o.command === 'doctor') {
       log(`Workspaces: ${root}`);
       await exec('gh', ['auth', 'status', '--hostname', url.hostname], process.cwd(), true);
@@ -174,8 +175,7 @@ async function main(args) {
       return dir;
     }
     async function agent(dir, task, implementation = false) {
-      mkdirSync(sessions, { recursive: true, mode: 0o700 });
-      await exec('pi', ['--print', '--no-approve', '--session-dir', sessions,
+      await exec('pi', ['--print', '--no-approve',
         ...(o.model ? ['--model', o.model] : []), '--',
         `You are lamplight, working only in this isolated checkout of ${name}: ${dir}.
 GitHub repository: ${repo.url}. Default branch: ${repo.defaultBranchRef.name}.
@@ -239,14 +239,12 @@ If already current and green with no actionable feedback, do nothing. Never merg
 
     if (!o['dry-run']) {
       const checkout = await exec('git', ['rev-parse', '--show-toplevel']).catch(() => '');
-      if (checkout && [state, ...(o['workspace-root'] ? [root] : [])].some(path => path === canonical(checkout) || path.startsWith(`${canonical(checkout)}/`))) throw new Error('Runner storage must be outside the current checkout.');
-      mkdirSync(state, { recursive: true, mode: 0o700 });
-      const path = join(state, '.lock');
-      try { mkdirSync(path); } catch (err) {
+      if (checkout && o['workspace-root'] && (root === canonical(checkout) || root.startsWith(`${canonical(checkout)}/`))) throw new Error('Runner storage must be outside the current checkout.');
+      try { mkdirSync(lockPath, { mode: 0o700 }); } catch (err) {
         if (err.code !== 'EEXIST') throw err;
-        throw new Error(`Runner lock exists: ${path}. Stop the other runner; if stale, inspect its pid file before removing the lock.`);
+        throw new Error(`Runner lock exists: ${lockPath}. Stop the other runner; if stale, inspect its pid file before removing the lock.`);
       }
-      lock = path;
+      lock = lockPath;
       writeFileSync(join(lock, 'pid'), `${process.pid}\n`);
       if (o['workspace-root']) mkdirSync(root, { recursive: true, mode: 0o700 });
       else root = temporary = mkdtempSync(join(tmpdir(), 'lamplight-'));
