@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -18,6 +18,7 @@ test('CLI parsing rejects bad input and keeps explicit issues independent of wat
   assert.equal(options(['--dry-run']).command, 'watch');
   assert.equal(options(['--help']).help, true);
   assert.equal(options(['--version']).version, true);
+  assert.equal(options(['--verbose']).verbose, true);
   for (const args of [['--triage'], ['--qa'], ['--interval', '0'], ['--repo', '../x']]) assert.throws(() => options(args));
   assert.deepEqual(options(['run', '2', '1', '2', '--model', 'anthropic/*sonnet*']).issues, [2, 1]);
   assert.deepEqual(options(['watch', '--label', 'bug', '--label', 'ready']).label, ['bug', 'ready']);
@@ -83,10 +84,13 @@ test('real CLI: zero-setup dry run, pi-managed sessions and temporary workspace/
       if (process.argv[2] === '--version') console.log('test');
       else {
         appendFileSync(process.env.LAMPLIGHT_TEST_LOG, JSON.stringify({args:process.argv.slice(2),cwd:process.cwd()})+'\\n');
+        console.log('Agent output sentinel');
+        console.error('Agent diagnostic sentinel');
         process.exit(Number(process.env.LAMPLIGHT_TEST_PI_EXIT || 0));
       }
     `);
     const run = (args, extra = {}, entry = cli) => spawnSync(process.execPath, [entry, ...args], { cwd: checkout, env: { ...env, ...extra }, encoding: 'utf8', timeout: 20000 });
+    const stateRoot = join(state, 'lamplight', 'github.com', 'example', 'project');
     const workspacePath = output => output.match(/^Workspaces: (.+)$/m)[1];
     const lockPath = output => output.match(/^Lock: (.+)$/m)[1];
     const before = git('status', '--porcelain').toString();
@@ -137,6 +141,12 @@ test('real CLI: zero-setup dry run, pi-managed sessions and temporary workspace/
     assert.match(result.stdout, /Finished: Issue #1 \(agent returned\)/);
     assert.match(result.stdout, /Finished: Issue #2 \(agent returned\)/);
     assert.match(result.stdout, /Session complete .*2 agent runs finished, 0 skipped/);
+    const runLog = result.stdout.match(/^Log: (.+)$/m)[1];
+    assert.ok(runLog.startsWith(join(stateRoot, 'logs')));
+    assert.match(readFileSync(runLog, 'utf8'), /pi test/);
+    assert.match(readFileSync(runLog, 'utf8'), /Agent output sentinel/);
+    assert.match(readFileSync(runLog, 'utf8'), /Agent diagnostic sentinel/);
+    assert.match(readFileSync(runLog, 'utf8'), /2 agent runs finished/);
     const root = workspacePath(result.stdout);
     assert.equal(root.startsWith(join(temp, 'lamplight-')), true);
     assert.equal(existsSync(root), false, 'successful runs remove their temporary workspaces');
@@ -151,7 +161,7 @@ test('real CLI: zero-setup dry run, pi-managed sessions and temporary workspace/
       assert.match(call.args.at(-1), /Default branch: trunk/);
       assert.match(call.args.at(-1), /New PRs start as drafts/);
     }
-    assert.equal(existsSync(state), false, 'lamplight must not create persistent state');
+    assert.deepEqual(readdirSync(stateRoot), ['logs'], 'sessions and locks stay outside persistent log storage');
     assert.equal(existsSync(repoLock), false);
     const workflow = join(dir, 'custom.md');
     writeFileSync(workflow, 'Custom workflow sentinel');
@@ -230,7 +240,7 @@ test('real CLI: zero-setup dry run, pi-managed sessions and temporary workspace/
     assert.equal(result.status, 1);
     assert.match(result.stderr, /Runner lock exists/);
     assert.equal(readFileSync(join(repoLock, 'pid'), 'utf8'), '123\n');
-    assert.equal(existsSync(state), false);
+    assert.deepEqual(readdirSync(stateRoot), ['logs']);
     assert.equal(git('status', '--porcelain').toString(), before);
   } finally {
     rmSync(dir, { recursive: true, force: true });
