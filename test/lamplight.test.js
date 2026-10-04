@@ -39,7 +39,7 @@ test('PR links respect repository and issue-number boundaries', () => {
   }
 });
 
-test('real CLI: zero-setup dry run, multiple issues, failure propagation, and external state', async () => {
+test('real CLI: zero-setup dry run, multiple issues, temporary workspace lifecycle and durable state', async () => {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'lamplight-test-')));
   try {
     const bin = join(dir, 'bin');
@@ -55,7 +55,9 @@ test('real CLI: zero-setup dry run, multiple issues, failure propagation, and ex
     writeFileSync(join(checkout, 'README.md'), 'Fixture\n');
     git('add', '.');
     git('commit', '-m', 'fixture');
-    const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, XDG_STATE_HOME: state, LAMPLIGHT_TEST_LOG: log, LAMPLIGHT_TEST_REPO: checkout };
+    const temp = join(dir, 'temp');
+    mkdirSync(temp);
+    const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, TMPDIR: temp, XDG_STATE_HOME: state, LAMPLIGHT_TEST_LOG: log, LAMPLIGHT_TEST_REPO: checkout };
     function script(name, text) {
       writeFileSync(join(bin, name), `#!${process.execPath}\n${text}`, { mode: 0o755 });
     }
@@ -68,6 +70,7 @@ test('real CLI: zero-setup dry run, multiple issues, failure propagation, and ex
       else if (a[0] === 'issue' && a[1] === 'view') result = {number:Number(a[2]),title:'Issue '+a[2],body:'Fix it.',state:'OPEN',labels:[],createdAt:'2026-01-01'};
       else if (a[0] === 'issue' && a[1] === 'list') result = JSON.parse(process.env.LAMPLIGHT_TEST_ISSUES || '${JSON.stringify([issue(1)])}');
       else if (a[0] === 'pr' && a[1] === 'list') result = JSON.parse(process.env.LAMPLIGHT_TEST_PRS || '[]');
+      else if (a[0] === 'auth' && a[1] === 'status') process.exit(0);
       else if (a[0] === 'pr' && a[1] === 'checkout') process.exit(7);
       else if (a[0] === 'repo' && a[1] === 'clone') {
         execFileSync('git', ['clone', process.env.LAMPLIGHT_TEST_REPO, a[3]]);
@@ -80,11 +83,13 @@ test('real CLI: zero-setup dry run, multiple issues, failure propagation, and ex
       if (process.argv[2] === '--version') console.log('test');
       else {
         appendFileSync(process.env.LAMPLIGHT_TEST_LOG, JSON.stringify({args:process.argv.slice(2),cwd:process.cwd()})+'\\n');
+        appendFileSync(require('node:path').join(process.argv[process.argv.indexOf('--session-dir') + 1], 'test.jsonl'), 'session sentinel\\n');
         process.exit(Number(process.env.LAMPLIGHT_TEST_PI_EXIT || 0));
       }
     `);
     const run = (args, extra = {}, entry = cli) => spawnSync(process.execPath, [entry, ...args], { cwd: checkout, env: { ...env, ...extra }, encoding: 'utf8', timeout: 20000 });
-    const root = join(state, 'lamplight', 'github.com', 'example', 'project');
+    const stateRoot = join(state, 'lamplight', 'github.com', 'example', 'project');
+    const workspacePath = output => output.match(/^Workspaces: (.+)$/m)[1];
     const before = git('status', '--porcelain').toString();
     symlinkSync(cli, join(bin, 'lamplight'));
     let result = run(['--help'], {}, join(bin, 'lamplight'));
@@ -94,12 +99,17 @@ test('real CLI: zero-setup dry run, multiple issues, failure propagation, and ex
     result = run(['--version']);
     assert.equal(result.status, 0, result.stderr);
     assert.equal(existsSync(log), false);
+    result = run(['doctor']);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(existsSync(workspacePath(result.stdout)), false);
+    assert.equal(existsSync(state), false);
     result = run(['run', '1', '2', '--dry-run']);
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /Would run #1/);
     assert.match(result.stdout, /Would run #2/);
     assert.equal(existsSync(state), false);
     assert.equal(existsSync(log), false);
+    assert.equal(existsSync(workspacePath(result.stdout)), false);
     result = run(['--dry-run'], { LAMPLIGHT_TEST_PRS: JSON.stringify([pr('Closes #1')]) });
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /Would triage/);
@@ -116,24 +126,32 @@ test('real CLI: zero-setup dry run, multiple issues, failure propagation, and ex
     assert.equal(existsSync(join(checkout, 'state')), false);
     result = run(['run', '1', '2', '--model', 'some/model']);
     assert.equal(result.status, 0, result.stderr);
+    const root = workspacePath(result.stdout);
+    assert.equal(root.startsWith(join(temp, 'lamplight-')), true);
+    assert.equal(existsSync(root), false, 'successful runs remove their temporary workspaces');
     const calls = readFileSync(log, 'utf8').trim().split('\n').map(JSON.parse);
     assert.equal(calls.length, 2);
     for (const [index, call] of calls.entries()) {
       assert.equal(call.cwd, join(root, `GH-${index + 1}`));
       assert.ok(call.args.includes('some/model'));
       assert.ok(call.args.includes('--no-approve'));
-      assert.equal(call.args[call.args.indexOf('--session-dir') + 1], join(root, 'sessions'));
+      assert.equal(call.args[call.args.indexOf('--session-dir') + 1], join(stateRoot, 'sessions'));
       assert.match(call.args.at(-1), /Default branch: trunk/);
       assert.match(call.args.at(-1), /New PRs start as drafts/);
     }
-    assert.equal(existsSync(join(root, '.lock')), false);
+    assert.equal(readFileSync(join(stateRoot, 'sessions', 'test.jsonl'), 'utf8'), 'session sentinel\nsession sentinel\n');
+    assert.equal(existsSync(join(stateRoot, '.lock')), false);
     const workflow = join(dir, 'custom.md');
     writeFileSync(workflow, 'Custom workflow sentinel');
     result = run(['run', '3', '--workflow', workflow], { LAMPLIGHT_TEST_PI_EXIT: '9' });
     assert.equal(result.status, 1);
     assert.match(result.stderr, /pi exited with 9/);
     assert.match(readFileSync(log, 'utf8'), /Custom workflow sentinel/);
-    assert.equal(existsSync(join(root, '.lock')), false);
+    const failedRoot = workspacePath(result.stdout);
+    assert.notEqual(failedRoot, root);
+    assert.equal(existsSync(join(failedRoot, 'GH-3', '.git')), true);
+    assert.ok(result.stderr.includes(`Workspaces kept for recovery: ${failedRoot}`));
+    assert.equal(existsSync(join(stateRoot, '.lock')), false);
     result = run(['watch'], { LAMPLIGHT_TEST_PRS: JSON.stringify([pr('Closes #1')]) });
     assert.equal(result.status, 1);
     assert.match(result.stderr, /gh exited with 7/);
@@ -165,14 +183,26 @@ test('real CLI: zero-setup dry run, multiple issues, failure propagation, and ex
       const stages = readFileSync(log, 'utf8').trim().split('\n').map(JSON.parse).slice(-2);
       assert.match(stages[0].args.at(-1), /Triage open issues/);
       assert.match(stages[1].args.at(-1), issues.length ? /Implement issue #1/ : /QA this repository/);
+      const interruptedRoot = workspacePath(output);
+      assert.equal(existsSync(join(interruptedRoot, issues.length ? 'GH-1' : 'QA', '.git')), true);
+      assert.ok(output.includes(`Workspaces kept for recovery: ${interruptedRoot}`));
       assert.equal(existsSync(join(state, 'lamplight', 'example', 'project', '.lock')), false);
     }
-    mkdirSync(join(root, '.lock'));
-    writeFileSync(join(root, '.lock', 'pid'), '123\n');
+    const persistent = join(dir, 'persistent');
+    result = run(['run', '4', '--workspace-root', persistent]);
+    assert.equal(result.status, 0, result.stderr);
+    const persistentRoot = workspacePath(result.stdout);
+    assert.equal(persistentRoot, join(persistent, 'github.com', 'example', 'project'));
+    assert.equal(existsSync(join(persistentRoot, 'GH-4', '.git')), true);
+    result = run(['run', '4', '--workspace-root', persistent]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(workspacePath(result.stdout), persistentRoot);
+    mkdirSync(join(stateRoot, '.lock'));
+    writeFileSync(join(stateRoot, '.lock', 'pid'), '123\n');
     result = run(['run', '4']);
     assert.equal(result.status, 1);
     assert.match(result.stderr, /Runner lock exists/);
-    assert.equal(readFileSync(join(root, '.lock', 'pid'), 'utf8'), '123\n');
+    assert.equal(readFileSync(join(stateRoot, '.lock', 'pid'), 'utf8'), '123\n');
     assert.equal(git('status', '--porcelain').toString(), before);
   } finally {
     rmSync(dir, { recursive: true, force: true });

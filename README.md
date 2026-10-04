@@ -31,7 +31,7 @@ This starts the full loop immediately and can change GitHub labels, comments,
 issues, and PRs. Use `npx lamplight --dry-run` to preview one pass without writes,
 or `npx lamplight --help` for usage. Ctrl-C stops the loop.
 
-For repeatable runs, pin a version: `npx lamplight@0.2.0`. Nothing is added to the
+For repeatable runs, pin a version: `npx lamplight@0.3.0`. Nothing is added to the
 target repo's package manifest.
 
 To run directly from GitHub, use
@@ -67,7 +67,7 @@ npx lamplight run 72 --workflow ~/.config/lamplight/my-workflow.md
 | `--label name` | Filter the loop's work queue. Repeat for AND matching. Explicit `run` issues cannot be combined with label filters. |
 | `--interval seconds` | 300; delay after **every** loop pass, including successful work. |
 | `--workflow file` | Replace the bundled implementation/PR prompt with your own external Markdown file. Not interpreted as YAML or a template. |
-| `--workspace-root dir` | Override the external storage base. Host/owner/repo namespaces are still appended. Must be outside the current checkout. |
+| `--workspace-root dir` | Use persistent external workspaces instead of a fresh OS temp directory. Host/owner/repo namespaces are appended. Must be outside the current checkout. |
 | `--dry-run` | Read GitHub and print one pass's plan. Never invokes pi, clones, locks, or writes runner state. A triage plan cannot predict which labels pi would change. |
 
 Each loop automatically triages **all open issues**, even with `--label`: it
@@ -98,26 +98,37 @@ instructions, not the runner's top-level safety instructions or triage/QA tasks.
 ## Where everything lives
 
 ```text
-${XDG_STATE_HOME:-~/.local/state}/lamplight/
-  github.com/owner/repo/
-    GH-72/       # implementation checkout
-    PR-99/       # separate PR-maintenance checkout
-    queue/       # triage checkout
-    QA/          # idle-QA checkout (created when the queue is empty)
-    sessions/    # pi transcripts, outside every checkout
-    .lock/pid    # one active runner per repo/storage root
+<OS temp directory>/lamplight-<random>/
+  GH-72/       # implementation checkout
+  PR-99/       # separate PR-maintenance checkout
+  queue/       # triage checkout
+  QA/          # idle-QA checkout (created when the queue is empty)
+
+${XDG_STATE_HOME:-~/.local/state}/lamplight/github.com/owner/repo/
+  sessions/    # durable pi transcripts, outside every checkout
+  .lock/pid    # one active runner per repo/state directory
 ```
+
+Each run creates a private, unique workspace directory using Node's `os.tmpdir()`
+and `fs.mkdtemp()` (respecting the OS temp configuration, such as `TMPDIR`).
+Successful runs delete that directory. Errors and Ctrl-C/SIGTERM retain it and
+print its path for recovery; OS cleanup may eventually remove temp directories.
+Pi sessions remain in durable storage regardless of the outcome. Dry-run and
+doctor never create workspaces. There is no workspace reuse between runs by default.
+
+Use `--workspace-root` for persistent, reusable clones; these are never automatically
+deleted. Existing clones in the old state location are untouched; pass that storage
+base as `--workspace-root` to reuse them.
 
 Lamplight doesn't install itself into your project, edit `.gitignore`, or create a
 `WORKFLOW.md`. The caller's checkout is not used for implementation. Unsaved local
 changes are not copied into the workspace; work starts from the remote repository.
-Workspaces persist for recovery; **there is no automatic deletion** of old clones.
-Inspect and remove them yourself when no runner is active. Paths and transcripts
-can contain private source code or issue data; do not publish them indiscriminately.
+Paths and transcripts can contain private source code or issue data; do not publish
+them indiscriminately.
 
 Ctrl-C/SIGTERM stops the active child and releases the runner lock. After a crash
 or SIGKILL, inspect `.lock/pid` and confirm no runner/agent is active before removing
-that stale lock. Don't run concurrent instances with different storage roots for
+that stale lock. Don't run concurrent instances with different state directories for
 the same repo. Errors exit nonzero rather than continuing on the wrong branch.
 Agent text streams to the terminal and pi sessions are retained externally.
 

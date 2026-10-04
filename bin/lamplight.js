@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, realpathSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
@@ -23,7 +23,7 @@ Options:
   --label <name>         Filter the loop's issue queue (repeatable; AND matching)
   --interval <seconds>   Delay between loop passes (default: 300)
   --workflow <file>      Replace bundled implementation instructions
-  --workspace-root <dir> External storage base; repo namespaces are appended
+  --workspace-root <dir> Reuse external workspaces; repo namespaces are appended
   --dry-run              Read GitHub and print one plan; no agent or workspaces
   -h, --help             Show this help without checking tools or credentials
   -v, --version          Show version
@@ -38,11 +38,12 @@ Examples:
 
 Requires Node >=22.19, git, gh (authenticated), and pi (model configured).
 Supports macOS and Linux, with GitHub repositories. No repo setup files.
-State: $XDG_STATE_HOME/lamplight or ~/.local/state/lamplight, then host/owner/repo.
+Workspaces: fresh OS temp directory per run; removed only after success.
+Sessions/locks: $XDG_STATE_HOME/lamplight or ~/.local/state/lamplight, per repo.
 The loop changes labels/comments and files issues during idle QA automatically.
 Running can spend tokens, push branches, and open draft PRs. No auto-merge.
 Clones are NOT a sandbox. Use trusted repos or an isolated environment.
-Ctrl-C stops the runner. Workspaces and pi sessions are kept for recovery.
+Ctrl-C stops the runner. Failed/interrupted workspaces and sessions are kept.
 Inspired by OpenAI Symphony. https://github.com/redreceipt/lamplight
 `;
 
@@ -120,7 +121,8 @@ async function main(args) {
     });
   }
   const json = async argv => JSON.parse(await exec('gh', argv));
-  let lock;
+  let lock, temporary;
+  let completed = false;
   try {
     await exec('git', ['--version']);
     if (!o['dry-run']) {
@@ -131,10 +133,13 @@ async function main(args) {
     if (!repo.defaultBranchRef?.name) throw new Error('Repository has no default branch. Push an initial commit first.');
     const url = new URL(repo.url);
     const name = repo.nameWithOwner;
-    const base = canonical(resolve(o['workspace-root'] || join(process.env.XDG_STATE_HOME || join(homedir(), '.local', 'state'), 'lamplight')));
-    const root = canonical(join(base, url.hostname, ...name.toLowerCase().split('/')));
-    console.log(`Repository: ${name}\nDefault branch: ${repo.defaultBranchRef.name}\nWorkspaces: ${root}`);
+    const namespace = [url.hostname, ...name.toLowerCase().split('/')];
+    const state = canonical(resolve(join(process.env.XDG_STATE_HOME || join(homedir(), '.local', 'state'), 'lamplight', ...namespace)));
+    const sessions = join(state, 'sessions');
+    let root = o['workspace-root'] ? canonical(resolve(o['workspace-root'], ...namespace)) : join(tmpdir(), 'lamplight-<random>');
+    console.log(`Repository: ${name}\nDefault branch: ${repo.defaultBranchRef.name}\nSessions: ${sessions}`);
     if (o.command === 'doctor') {
+      console.log(`Workspaces: ${root}`);
       await exec('gh', ['auth', 'status', '--hostname', url.hostname], process.cwd(), true);
       if (o.model) await exec('pi', ['auth', 'check', '--model', o.model], process.cwd(), true);
       else console.log('Model credentials not checked. Use doctor --model <pattern> or configure pi with /login and /model.');
@@ -161,8 +166,7 @@ async function main(args) {
       return dir;
     }
     async function agent(dir, task, implementation = false) {
-      const sessions = join(root, 'sessions');
-      mkdirSync(sessions, { recursive: true });
+      mkdirSync(sessions, { recursive: true, mode: 0o700 });
       await exec('pi', ['--print', '--no-approve', '--session-dir', sessions,
         ...(o.model ? ['--model', o.model] : []), '--',
         `You are lamplight, working only in this isolated checkout of ${name}: ${dir}.
@@ -219,18 +223,20 @@ If already current and green with no actionable feedback, do nothing. Never merg
     }
 
     if (!o['dry-run']) {
-      // Resolve storage before locking, but never auto-delete workspaces or stale locks.
       const checkout = await exec('git', ['rev-parse', '--show-toplevel']).catch(() => '');
-      if (checkout && (root === canonical(checkout) || root.startsWith(`${canonical(checkout)}/`))) throw new Error('--workspace-root must be outside the current checkout.');
-      mkdirSync(root, { recursive: true, mode: 0o700 });
-      const path = join(root, '.lock');
+      if (checkout && [state, ...(o['workspace-root'] ? [root] : [])].some(path => path === canonical(checkout) || path.startsWith(`${canonical(checkout)}/`))) throw new Error('Runner storage must be outside the current checkout.');
+      mkdirSync(state, { recursive: true, mode: 0o700 });
+      const path = join(state, '.lock');
       try { mkdirSync(path); } catch (err) {
         if (err.code !== 'EEXIST') throw err;
         throw new Error(`Runner lock exists: ${path}. Stop the other runner; if stale, inspect its pid file before removing the lock.`);
       }
       lock = path;
       writeFileSync(join(lock, 'pid'), `${process.pid}\n`);
+      if (o['workspace-root']) mkdirSync(root, { recursive: true, mode: 0o700 });
+      else root = temporary = mkdtempSync(join(tmpdir(), 'lamplight-'));
     }
+    console.log(`Workspaces: ${root}`);
     if (o.command === 'run') {
       const issues = [];
       for (const n of o.issues) issues.push(await getIssue(n));
@@ -243,6 +249,7 @@ If already current and green with no actionable feedback, do nothing. Never merg
         await sleep(Number(o.interval) * 1000, undefined, { signal: abort.signal });
       } while (!abort.signal.aborted);
     }
+    completed = !abort.signal.aborted;
   } finally {
     if (lock) {
       if (existsSync(join(lock, 'pid'))) unlinkSync(join(lock, 'pid'));
@@ -250,6 +257,10 @@ If already current and green with no actionable feedback, do nothing. Never merg
     }
     process.off('SIGINT', onINT);
     process.off('SIGTERM', onTERM);
+    if (temporary) {
+      if (completed) rmSync(temporary, { recursive: true });
+      else console.error(`Workspaces kept for recovery: ${temporary}`);
+    }
   }
 }
 
