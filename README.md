@@ -4,8 +4,9 @@
 
 A small, sequential GitHub Issues runner for [pi](https://pi.dev), inspired by
 [OpenAI Symphony](https://github.com/openai/symphony). Each issue gets an isolated
-clone. Pi implements the change, validates it, and opens a draft PR. Watch mode
-also maintains lamplight PRs when CI fails or review feedback arrives.
+clone. Pi implements the change, validates it, and opens a draft PR. Just run
+`npx lamplight`: it triages issues, maintains lamplight PRs, works the queue, and
+runs QA when idle. No feature flags required.
 
 No setup commit. No required workflow file. No runtime npm dependencies.
 
@@ -23,14 +24,15 @@ gh auth login
 gh auth setup-git
 
 cd /path/to/your/repo
-npx lamplight --help
-npx lamplight doctor
-npx lamplight run 72 --dry-run
-npx lamplight run 72
+npx lamplight
 ```
 
-For repeatable runs, pin a version: `npx lamplight@0.1.0 --help`. Nothing is
-added to the target repo's package manifest.
+This starts the full loop immediately and can change GitHub labels, comments,
+issues, and PRs. Use `npx lamplight --dry-run` to preview one pass without writes,
+or `npx lamplight --help` for usage. Ctrl-C stops the loop.
+
+For repeatable runs, pin a version: `npx lamplight@0.2.0`. Nothing is added to the
+target repo's package manifest.
 
 To run directly from GitHub, use
 `npx --allow-git=root github:redreceipt/lamplight --help`. The per-command
@@ -41,17 +43,18 @@ It does not change global npm settings. Lamplight has no Git dependencies.
 
 | Command | Behavior |
 | --- | --- |
-| `run 72 81` | Process each explicit issue once, in order, then exit. |
-| `watch` | Maintain open lamplight PRs, work one queued issue, sleep, repeat. |
+| *(no command)* | Triage, maintain open lamplight PRs, work one queued issue or run idle QA, sleep, repeat. |
+| `run 72 81` | Process each explicit issue once, in order, then exit. No triage or idle QA. |
+| `watch` | Optional alias for the default loop; not required. |
 | `doctor` | Check executables, GitHub auth/access, repo, and state path. With `--model`, also check that model's auth. |
 | `--help` | Full usage, examples, defaults, prerequisites, and safety notes. No credentials required. |
 | `--version` | Print the package version. |
 
 ```sh
-npx lamplight watch --label bug
-npx lamplight watch --repo owner/repo --interval 600
+npx lamplight --label bug
+npx lamplight --repo owner/repo --interval 600
 npx lamplight run 72 81 --model 'anthropic/*sonnet*'
-npx lamplight watch --triage --qa --dry-run
+npx lamplight --dry-run
 npx lamplight run 72 --workflow ~/.config/lamplight/my-workflow.md
 ```
 
@@ -61,20 +64,25 @@ npx lamplight run 72 --workflow ~/.config/lamplight/my-workflow.md
 | --- | --- |
 | `--repo owner/repo` | Detected by `gh` from the current directory. With this option, no local checkout is needed. Uses `gh`'s configured host (`GH_HOST` for Enterprise). |
 | `-m, --model pattern` | Pi's configured model; passed directly to pi when provided. |
-| `--label name` | Watch only. Repeat for AND matching. Explicit `run` issues cannot be combined with label filters. |
-| `--interval seconds` | 300; delay after **every** watch pass, including successful work. |
+| `--label name` | Filter the loop's work queue. Repeat for AND matching. Explicit `run` issues cannot be combined with label filters. |
+| `--interval seconds` | 300; delay after **every** loop pass, including successful work. |
 | `--workflow file` | Replace the bundled implementation/PR prompt with your own external Markdown file. Not interpreted as YAML or a template. |
 | `--workspace-root dir` | Override the external storage base. Host/owner/repo namespaces are still appended. Must be outside the current checkout. |
-| `--triage` | Watch only; opt in to automatic `bug`/`blocked` labeling and status-change comments across open issues. |
-| `--qa` | Watch only; when the selected queue is empty, opt in to QA that files reproducible, de-duplicated issues. |
 | `--dry-run` | Read GitHub and print one pass's plan. Never invokes pi, clones, locks, or writes runner state. A triage plan cannot predict which labels pi would change. |
 
-`run` and `watch` both skip closed/blocked issues and issues already referenced by
+Each loop automatically triages **all open issues**, even with `--label`: it
+maintains `bug`/`blocked` labels and comments when blocked status changes. After
+PR maintenance, it works one eligible issue. If the selected work queue is empty,
+it runs QA and can file reproducible bugs after checking for duplicates. Then it
+waits five minutes and repeats. Triage and idle QA are built in; there are no
+`--triage` or `--qa` flags.
+
+`run` and the default loop both skip closed/blocked issues and issues already referenced by
 an open PR. Reference detection uses GitHub's closing-issue links and conservative
 body/title references (`#72` or the full issue URL). A mention can cause a skip;
 review the referenced PR if an issue appears incorrectly in flight.
 
-Watch orders bugs first, then oldest-first, after filtering blocked issues.
+The loop orders bugs first, then oldest-first, after filtering blocked issues.
 It maintains same-repository branches named `lamplight/GH-<number>-<slug>`, not arbitrary
 PRs, fork branches, or existing `symphony/` branches. PR checkout/fetch failures
 stop before pi runs. Each list is capped at 1,000 results and reaching that cap
@@ -94,8 +102,8 @@ ${XDG_STATE_HOME:-~/.local/state}/lamplight/
   github.com/owner/repo/
     GH-72/       # implementation checkout
     PR-99/       # separate PR-maintenance checkout
-    queue/       # optional triage checkout
-    QA/          # optional idle-QA checkout
+    queue/       # triage checkout
+    QA/          # idle-QA checkout (created when the queue is empty)
     sessions/    # pi transcripts, outside every checkout
     .lock/pid    # one active runner per repo/storage root
 ```
@@ -120,12 +128,13 @@ Agent text streams to the terminal and pi sessions are retained externally.
   Issues, repository instructions, and review comments can contain prompt injection.
   Use a dedicated account/container/VM and narrowly scoped credentials for untrusted
   repos or unattended work. See [pi's security guidance](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/security.md).
-- `run`/`watch` authorize model usage, local code execution, commits, pushes, issue
-  comments, and draft PR creation/maintenance. They can incur model costs. Prompts
+- Starting lamplight authorizes model usage, local code execution, commits, pushes,
+  issue labeling/comments/creation, and draft PR creation/maintenance. It can incur
+  model costs. `run` limits work to explicit issues without triage/QA. Prompts
   prohibit merges/deploys, but prompts are not permission enforcement. Restrict
   credentials and use branch protection for hard controls.
-- Triage and issue-generating idle QA are off unless explicitly enabled. Watch
-  inspects every lamplight PR each pass; increase `--interval` to reduce cost.
+- Triage, PR maintenance, and issue-generating idle QA are automatic in the loop.
+  Every lamplight PR is inspected each pass; increase `--interval` to reduce cost.
 - Doctor without `--model` does not validate provider credentials, and dry-run
   does not verify model readiness. Run `pi` to configure `/login` and `/model`.
 - GitHub + pi only. No daemon, parallel agents, tracker adapters, automatic

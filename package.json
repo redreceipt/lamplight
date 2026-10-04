@@ -1,6 +1,6 @@
 {
   "name": "lamplight",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Issues in. Pull requests out. A lightweight GitHub + pi runner inspired by Symphony.",
   "type": "module",
   "bin": { "lamplight": "bin/lamplight.js" },

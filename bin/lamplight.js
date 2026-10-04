@@ -11,58 +11,60 @@ const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url),
 const help = `lamplight — Issues in. Pull requests out.
 
 Usage:
-  lamplight run <issue...>     Process selected issues sequentially, then exit
-  lamplight watch             Maintain lamplight PRs, then pick one issue per poll
-  lamplight doctor            Check tools, GitHub access, and optional model auth
+  lamplight                  Triage, maintain PRs, work issues, idle QA; repeat
+  lamplight run <issue...>    Process selected issues sequentially, then exit
+  lamplight doctor           Check tools, GitHub access, and optional model auth
+
+Running without a command starts the full loop. "watch" is an optional alias.
 
 Options:
   --repo <owner/repo>     Default: repository detected by gh in this directory
   -m, --model <pattern>   Pi model (default: pi's configured model)
-  --label <name>         Filter watch's issue queue (repeatable; AND matching)
-  --interval <seconds>   Delay between watch passes (default: 300)
+  --label <name>         Filter the loop's issue queue (repeatable; AND matching)
+  --interval <seconds>   Delay between loop passes (default: 300)
   --workflow <file>      Replace bundled implementation instructions
   --workspace-root <dir> External storage base; repo namespaces are appended
-  --triage               Watch: allow automatic issue labeling/comments
-  --qa                   Watch: allow idle QA to file de-duplicated issues
   --dry-run              Read GitHub and print one plan; no agent or workspaces
   -h, --help             Show this help without checking tools or credentials
   -v, --version          Show version
 
 Examples:
+  npx lamplight
   npx lamplight doctor
   npx lamplight run 72 81 --dry-run
   npx lamplight run 72 --model 'anthropic/*sonnet*'
-  npx lamplight watch --label bug
-  npx lamplight watch --repo owner/repo --triage --qa
+  npx lamplight --label bug
+  npx lamplight --repo owner/repo --dry-run
 
 Requires Node >=22.19, git, gh (authenticated), and pi (model configured).
 Supports macOS and Linux, with GitHub repositories. No repo setup files.
 State: $XDG_STATE_HOME/lamplight or ~/.local/state/lamplight, then host/owner/repo.
-run/watch can spend tokens, push branches, and open PRs. No auto-merge.
+The loop changes labels/comments and files issues during idle QA automatically.
+Running can spend tokens, push branches, and open draft PRs. No auto-merge.
 Clones are NOT a sandbox. Use trusted repos or an isolated environment.
 Ctrl-C stops the runner. Workspaces and pi sessions are kept for recovery.
 Inspired by OpenAI Symphony. https://github.com/redreceipt/lamplight
 `;
 
 export function options(args) {
-  const { values: v, positionals: [command, ...issues] } = parseArgs({
+  const { values: v, positionals: [command = 'watch', ...issues] } = parseArgs({
     args, allowPositionals: true,
     options: {
       help: { type: 'boolean', short: 'h' }, version: { type: 'boolean', short: 'v' },
       repo: { type: 'string' }, model: { type: 'string', short: 'm' },
       label: { type: 'string', multiple: true }, interval: { type: 'string', default: '300' },
       workflow: { type: 'string' }, 'workspace-root': { type: 'string' },
-      triage: { type: 'boolean' }, qa: { type: 'boolean' }, 'dry-run': { type: 'boolean' },
+      'dry-run': { type: 'boolean' },
     },
   });
-  if (v.help || v.version || !command) return { ...v, help: v.help || !command };
+  if (v.help || v.version) return v;
   if (!['run', 'watch', 'doctor'].includes(command)) throw new Error(`Unknown command: ${command}. Try lamplight --help.`);
   if (command === 'run' ? !issues.length || issues.some(n => !/^[1-9]\d*$/.test(n) || !Number.isSafeInteger(Number(n))) : issues.length) {
-    throw new Error('Use lamplight run <positive issue numbers...>, lamplight watch, or lamplight doctor.');
+    throw new Error('Use lamplight, lamplight run <positive issue numbers...>, or lamplight doctor.');
   }
   if (v.repo && !/^[\w-]+\/[\w.-]+$/.test(v.repo)) throw new Error('--repo must be owner/repo.');
   if (!/^\d+$/.test(v.interval) || Number(v.interval) < 1 || Number(v.interval) > 2147483) throw new Error('--interval must be 1–2147483 seconds.');
-  if (command !== 'watch' && (v.triage || v.qa || v.label)) throw new Error('--label, --triage, and --qa are watch-only.');
+  if (command !== 'watch' && v.label) throw new Error('--label only applies to the continuous loop.');
   for (const key of ['repo', 'model', 'workflow', 'workspace-root']) {
     if (v[key] !== undefined && !v[key].trim()) throw new Error(`--${key} must not be empty.`);
   }
@@ -184,10 +186,8 @@ Otherwise validate, commit, push, and open a draft PR linking "Closes #${issue.n
 Issue data: ${JSON.stringify(issue)}`, true);
     }
     async function watchPass() {
-      if (o.triage) {
-        console.log(`${o['dry-run'] ? 'Would triage' : 'Triaging'} open issues (labels/comments enabled).`);
-        if (!o['dry-run']) await agent(await workspace('queue'), 'Triage open issues with gh: apply bug only for broken behavior, and blocked only for explicit unresolved dependencies. Remove those labels when clearly incorrect or resolved. Comment only when changing blocked status, naming the reason. Do not create issues, write code, branch, or open PRs.');
-      }
+      console.log(`${o['dry-run'] ? 'Would triage' : 'Triaging'} open issues (labels/comments enabled).`);
+      if (!o['dry-run']) await agent(await workspace('queue'), 'Triage open issues with gh: apply bug only for broken behavior, and blocked only for explicit unresolved dependencies. Remove those labels when clearly incorrect or resolved. Comment only when changing blocked status, naming the reason. Do not create issues, write code, branch, or open PRs.');
       let prs = await getPRs();
       for (const pr of prs.filter(p => !p.isCrossRepository && /^lamplight\/GH-\d+-/.test(p.headRefName))) {
         console.log(`${o['dry-run'] ? 'Would maintain' : 'Maintaining'} PR #${pr.number}: ${JSON.stringify(pr.title)}`);
@@ -206,7 +206,7 @@ If already current and green with no actionable feedback, do nothing. Never merg
       const issues = actionable(await list('issue', issueFields, (o.label || []).flatMap(label => ['--label', label])));
       const next = issues.find(i => !linkedPR(prs, i.number, repo.url));
       if (next) await runIssue(next, prs);
-      else if (o.qa) {
+      else {
         console.log(`${o['dry-run'] ? 'Would run' : 'Running'} idle QA (issue creation enabled).`);
         if (!o['dry-run']) {
           const dir = await workspace('QA');
@@ -215,7 +215,7 @@ If already current and green with no actionable feedback, do nothing. Never merg
           await exec('git', ['pull', '--ff-only'], dir, true);
           await agent(dir, 'QA this repository using its README and documented runtime. Inspect existing open AND closed issues to avoid duplicates. File only reproducible, new bugs with steps, expected/actual behavior, and real runtime evidence. Do not change source code, branch, push, deploy, or open PRs. Report unavailable dependencies honestly.');
         }
-      } else console.log('No actionable issues. Idle QA is off; enable with --qa.');
+      }
     }
 
     if (!o['dry-run']) {

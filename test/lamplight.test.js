@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { options, actionable, linkedPR } from '../bin/lamplight.js';
 
 const cli = resolve('bin/lamplight.js');
@@ -12,8 +13,12 @@ const issue = (number, labels = [], state = 'OPEN') => ({ number, title: `Issue 
 const pr = (body, extra = {}) => ({ number: 99, title: 'A fix', body, headRefName: 'lamplight/GH-1-fix', isCrossRepository: false, closingIssuesReferences: [], ...extra });
 
 test('CLI parsing rejects bad input and keeps explicit issues independent of watch filters', () => {
-  assert.equal(options([]).help, true);
+  assert.equal(options([]).command, 'watch');
+  assert.deepEqual(options([]), options(['watch']));
+  assert.equal(options(['--dry-run']).command, 'watch');
   assert.equal(options(['--help']).help, true);
+  assert.equal(options(['--version']).version, true);
+  for (const args of [['--triage'], ['--qa'], ['--interval', '0'], ['--repo', '../x']]) assert.throws(() => options(args));
   assert.deepEqual(options(['run', '2', '1', '2', '--model', 'anthropic/*sonnet*']).issues, [2, 1]);
   assert.deepEqual(options(['watch', '--label', 'bug', '--label', 'ready']).label, ['bug', 'ready']);
   for (const args of [['run'], ['run', '0'], ['run', '1;echo bad'], ['run', '9007199254740992'], ['run', '1', '--label', 'bug'], ['watch', '1'], ['watch', '--interval', '0'], ['watch', '--interval', 'NaN'], ['watch', '--interval', '2147484'], ['watch', '--repo', '../x'], ['run', '1', '-m'], ['wat'], ['watch', '--unknown'], ['run', '1', '--model=']]) {
@@ -34,7 +39,7 @@ test('PR links respect repository and issue-number boundaries', () => {
   }
 });
 
-test('real CLI: zero-setup dry run, multiple issues, failure propagation, and external state', () => {
+test('real CLI: zero-setup dry run, multiple issues, failure propagation, and external state', async () => {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'lamplight-test-')));
   try {
     const bin = join(dir, 'bin');
@@ -58,14 +63,15 @@ test('real CLI: zero-setup dry run, multiple issues, failure propagation, and ex
       const { execFileSync } = require('node:child_process');
       const a = process.argv.slice(2);
       let result;
-      if (a[0] === 'repo' && a[1] === 'view') result = {nameWithOwner:'example/project',url:'${repoURL}',defaultBranchRef:{name:'trunk'}};
+      const url = process.env.LAMPLIGHT_TEST_URL || '${repoURL}';
+      if (a[0] === 'repo' && a[1] === 'view') result = {nameWithOwner:'example/project',url,defaultBranchRef:{name:'trunk'}};
       else if (a[0] === 'issue' && a[1] === 'view') result = {number:Number(a[2]),title:'Issue '+a[2],body:'Fix it.',state:'OPEN',labels:[],createdAt:'2026-01-01'};
-      else if (a[0] === 'issue' && a[1] === 'list') result = ${JSON.stringify([issue(1)])};
+      else if (a[0] === 'issue' && a[1] === 'list') result = JSON.parse(process.env.LAMPLIGHT_TEST_ISSUES || '${JSON.stringify([issue(1)])}');
       else if (a[0] === 'pr' && a[1] === 'list') result = JSON.parse(process.env.LAMPLIGHT_TEST_PRS || '[]');
       else if (a[0] === 'pr' && a[1] === 'checkout') process.exit(7);
       else if (a[0] === 'repo' && a[1] === 'clone') {
         execFileSync('git', ['clone', process.env.LAMPLIGHT_TEST_REPO, a[3]]);
-        execFileSync('git', ['remote','set-url','origin','${repoURL}'], {cwd:a[3]});
+        execFileSync('git', ['remote','set-url','origin',url], {cwd:a[3]});
       } else throw Error('Unexpected gh call: '+a.join(' '));
       if (result !== undefined) console.log(JSON.stringify(result));
     `);
@@ -84,18 +90,23 @@ test('real CLI: zero-setup dry run, multiple issues, failure propagation, and ex
     let result = run(['--help'], {}, join(bin, 'lamplight'));
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /Inspired by OpenAI Symphony/);
+    assert.doesNotMatch(result.stdout, /--triage|--qa/);
+    result = run(['--version']);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(existsSync(log), false);
     result = run(['run', '1', '2', '--dry-run']);
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /Would run #1/);
     assert.match(result.stdout, /Would run #2/);
     assert.equal(existsSync(state), false);
     assert.equal(existsSync(log), false);
-    result = run(['watch', '--dry-run', '--triage', '--qa'], { LAMPLIGHT_TEST_PRS: JSON.stringify([pr('Closes #1')]) });
+    result = run(['--dry-run'], { LAMPLIGHT_TEST_PRS: JSON.stringify([pr('Closes #1')]) });
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /Would triage/);
     assert.match(result.stdout, /Would maintain PR #99/);
     assert.match(result.stdout, /Would run idle QA/);
     assert.equal(existsSync(state), false);
+    assert.equal(existsSync(log), false);
     result = run(['run', '1', '--workspace-root', join(checkout, 'state')]);
     assert.equal(result.status, 1);
     assert.match(result.stderr, /outside the current checkout/);
@@ -126,7 +137,36 @@ test('real CLI: zero-setup dry run, multiple issues, failure propagation, and ex
     result = run(['watch'], { LAMPLIGHT_TEST_PRS: JSON.stringify([pr('Closes #1')]) });
     assert.equal(result.status, 1);
     assert.match(result.stderr, /gh exited with 7/);
-    assert.equal(readFileSync(log, 'utf8').trim().split('\n').length, 3, 'checkout failure must not start pi');
+    const afterCheckoutFailure = readFileSync(log, 'utf8').trim().split('\n').map(JSON.parse);
+    assert.equal(afterCheckoutFailure.length, 4, 'checkout failure must not start a PR agent');
+    assert.match(afterCheckoutFailure.at(-1).args.at(-1), /Triage open issues/);
+    for (const issues of [[], [issue(1)]]) {
+      const output = await new Promise((done, fail) => {
+        const child = spawn(process.execPath, [cli], {
+          cwd: checkout, env: { ...env, LAMPLIGHT_TEST_URL: pathToFileURL(checkout).href, LAMPLIGHT_TEST_ISSUES: JSON.stringify(issues) },
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        let output = '';
+        const timeout = setTimeout(() => child.kill('SIGKILL'), 20000);
+        child.stdout.on('data', chunk => {
+          output += chunk;
+          if (output.includes('Sleeping 300s.')) child.kill('SIGTERM');
+        });
+        child.stderr.on('data', chunk => { output += chunk; });
+        child.on('error', fail);
+        child.on('close', code => {
+          clearTimeout(timeout);
+          if (code === 143) done(output);
+          else fail(new Error(`Default loop exited ${code}: ${output}`));
+        });
+      });
+      assert.match(output, /Triaging open issues/);
+      assert.match(output, issues.length ? /Running #1/ : /Running idle QA/);
+      const stages = readFileSync(log, 'utf8').trim().split('\n').map(JSON.parse).slice(-2);
+      assert.match(stages[0].args.at(-1), /Triage open issues/);
+      assert.match(stages[1].args.at(-1), issues.length ? /Implement issue #1/ : /QA this repository/);
+      assert.equal(existsSync(join(state, 'lamplight', 'example', 'project', '.lock')), false);
+    }
     mkdirSync(join(root, '.lock'));
     writeFileSync(join(root, '.lock', 'pid'), '123\n');
     result = run(['run', '4']);
