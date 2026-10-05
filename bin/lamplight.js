@@ -282,7 +282,7 @@ Eligible PRs for maintenance: ${JSON.stringify(eligiblePRs)}`);
         await agent(dir, `Maintain PR #${pr.number} on ${pr.headRefName}. Inspect gh pr view, gh pr checks, and unresolved review threads via gh api.
 Sync with origin/${repo.defaultBranchRef.name} without force-pushing. Resolve only clear conflicts; report product-judgment blockers.
 Fix branch-caused CI failures and actionable feedback; classify unrelated failures. Validate changed code and refresh ## Proof only when the existing evidence no longer covers it or applicable visual evidence is missing. Preserve valid proof on an unchanged head. Push to this same branch, never open another PR.
-If already current and green with no actionable feedback, do nothing. Never merge the PR.
+If already current and green with no actionable feedback and no applicable visual evidence missing, do nothing. Never merge the PR.
 Planner handoff: ${plan.reason}`, true);
       }
       progress.phase('Reading issue queue');
