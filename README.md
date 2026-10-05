@@ -92,6 +92,13 @@ stops the runner rather than silently missing work.
 
 The bundled workflow requests focused changes, repo-specific checks, real runtime
 proof under `## Proof`, draft PRs, and no automatic merge or review request.
+QA findings must show the problem visually when applicable, alongside the explanation;
+PRs must visually demonstrate the solution when possible, with before/after evidence
+for visible bug fixes. Attach or embed real-runtime screenshots or interaction videos
+in the issue/report or PR, redact sensitive data, and keep artifacts outside Git.
+Explain when visuals are not applicable and provide other runtime evidence; if
+applicable visuals cannot be captured or attached, report the blocker and keep PRs
+draft. These evidence rules also apply to custom workflows.
 Pi reads existing `AGENTS.md`/`CLAUDE.md`; no lamplight-specific file is required.
 Repo-local pi settings/extensions are not automatically trusted (`--no-approve`).
 Global pi configuration still applies. A custom workflow replaces implementation
