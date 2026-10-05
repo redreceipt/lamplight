@@ -183,6 +183,8 @@ test('real CLI: zero-setup dry run, pi-managed sessions and temporary workspace/
       assert.equal(call.args.includes('--no-session'), false);
       assert.match(call.args.at(-1), /Default branch: trunk/);
       assert.match(call.args.at(-1), /New PRs start as drafts/);
+      assert.match(call.args.at(-1), /PRs must demonstrate the solution visually whenever possible in ## Proof; include before\/after evidence/);
+      assert.match(call.args.at(-1), /If applicable visuals cannot be captured or attached, report the blocker explicitly and keep PRs draft/);
     }
     assert.deepEqual(readdirSync(stateRoot), ['logs'], 'sessions and locks stay outside persistent log storage');
     assert.equal(existsSync(repoLock), false);
@@ -193,7 +195,10 @@ test('real CLI: zero-setup dry run, pi-managed sessions and temporary workspace/
     assert.match(result.stderr, /pi exited with 9/);
     assert.match(result.stdout, /Session failed .*0 agent runs finished/);
     assert.doesNotMatch(result.stdout, /Finished: Issue #3/);
-    assert.match(readFileSync(log, 'utf8'), /Custom workflow sentinel/);
+    const customPrompt = readFileSync(log, 'utf8').trim().split('\n').map(JSON.parse).at(-1).args.at(-1);
+    assert.match(customPrompt, /Custom workflow sentinel/);
+    assert.match(customPrompt, /PRs must demonstrate the solution visually whenever possible in ## Proof/);
+    assert.match(customPrompt, /These evidence rules also apply with a custom workflow/);
     const failedRoot = workspacePath(result.stdout);
     assert.notEqual(failedRoot, root);
     assert.equal(existsSync(join(failedRoot, 'GH-3', '.git')), true);
@@ -258,6 +263,11 @@ test('real CLI: zero-setup dry run, pi-managed sessions and temporary workspace/
       assert.match(stages[0].args.at(-1), /Read issue comments/);
       assert.match(stages[0].args.at(-1), /completed handoff even if the issue remains open/);
       if (selected) assert.match(stages[1].args.at(-1), selected === 'QA' ? /QA this repository/ : new RegExp(`Implement issue #${selected.slice(3)}`));
+      if (selected === 'QA') {
+        assert.match(stages[1].args.at(-1), /QA findings must show the problem visually whenever applicable, in addition to explaining it/);
+        assert.match(stages[1].args.at(-1), /Attach or embed the evidence in the GitHub issue\/report or PR/);
+        assert.match(stages[1].args.at(-1), /If visual evidence is not applicable, explain why and provide suitable real runtime evidence instead/);
+      }
       const interruptedRoot = workspacePath(output);
       assert.equal(existsSync(join(interruptedRoot, selected || 'queue', '.git')), true);
       assert.equal(existsSync(join(interruptedRoot, 'queue', '.git', 'lamplight-plan.json')), true);
