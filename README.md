@@ -43,7 +43,7 @@ It does not change global npm settings. Lamplight has no Git dependencies.
 
 | Command | Behavior |
 | --- | --- |
-| *(no command)* | Triage, maintain open lamplight PRs, work one queued issue or run idle QA, sleep, repeat. |
+| *(no command)* | Triage and plan useful work, maintain selected lamplight PRs, work one issue or run useful idle QA, otherwise wait; repeat. |
 | `run 72 81` | Process each explicit issue once, in order, then exit. No triage or idle QA. |
 | `watch` | Optional alias for the default loop; not required. |
 | `doctor` | Check executables, GitHub auth/access, repo, and storage locations. With `--model`, also check that model's auth. |
@@ -72,19 +72,32 @@ npx lamplight run 72 --workflow ~/.config/lamplight/my-workflow.md
 | `--dry-run` | Read GitHub and print one pass's plan. Never invokes pi, clones, locks, or writes runner state. A triage plan cannot predict which labels pi would change. |
 | `--verbose` | Stream agent and command output instead of showing the terminal dashboard. |
 
-Each loop automatically triages **all open issues**, even with `--label`: it
-maintains `bug`/`blocked` labels and comments when blocked status changes. After
-PR maintenance, it works one eligible issue. If the selected work queue is empty,
-it runs QA and can file reproducible bugs after checking for duplicates. Then it
+Each loop asks pi to triage **all open issues**, even with `--label`, and plan the
+next useful work from GitHub discussions and live PR state. It maintains
+`bug`/`blocked` labels and comments when blocked status changes. Existing
+evidence-backed comments that an issue is fixed, duplicate, obsolete, or awaiting
+a human count as completed handoffs, even when the issue remains open. New feedback
+or evidence can make it actionable again; elapsed time alone does not.
+
+The runner follows that plan rather than blindly taking the oldest open issue:
+it maintains only selected PRs and works at most one selected eligible issue.
+Current, green PRs awaiting human review and pending CI alone need no maintenance.
+When there is no actionable work, pi can choose useful idle QA or simply wait,
+without repeating exhausted checks or filing duplicate bugs. Then the runner
 waits five minutes and repeats. Triage and idle QA are built in; there are no
-`--triage` or `--qa` flags.
+`--triage` or `--qa` flags. Dry-run shows mechanical eligibility only; it cannot
+predict pi's history-based decisions.
 
 `run` and the default loop both skip closed/blocked issues and issues already referenced by
 an open PR. Reference detection uses GitHub's closing-issue links and conservative
 body/title references (`#72` or the full issue URL). A mention can cause a skip;
 review the referenced PR if an issue appears incorrectly in flight.
 
-The loop orders bugs first, then oldest-first, after filtering blocked issues.
+The planner prefers bugs, then oldest-first, among genuinely actionable issues;
+the runner rechecks open/blocked status, label filters, and PR links before dispatch.
+Plans with unknown issue/PR numbers or invalid actions stop the runner. The per-pass
+JSON handoff lives inside the triage clone's `.git` directory, never in source;
+GitHub discussions remain the shared history across runs.
 It maintains same-repository branches named `lamplight/GH-<number>-<slug>`, not arbitrary
 PRs, fork branches, or existing `symphony/` branches. PR checkout/fetch failures
 stop before pi runs. Each list is capped at 1,000 results and reaching that cap
@@ -189,8 +202,9 @@ No terminal UI dependencies are needed.
   model costs. `run` limits work to explicit issues without triage/QA. Prompts
   prohibit merges/deploys, but prompts are not permission enforcement. Restrict
   credentials and use branch protection for hard controls.
-- Triage, PR maintenance, and issue-generating idle QA are automatic in the loop.
-  Every lamplight PR is inspected each pass; increase `--interval` to reduce cost.
+- Triage, selected PR maintenance, and useful issue-generating idle QA are automatic
+  in the loop. Planning still invokes pi each pass; increase `--interval` to reduce
+  cost. History-aware routing is model judgment, not a hard no-duplicate guarantee.
 - Doctor without `--model` does not validate provider credentials, and dry-run
   does not verify model readiness. Run `pi` to configure `/login` and `/model`.
 - GitHub + pi only. No daemon, parallel agents, tracker adapters, automatic

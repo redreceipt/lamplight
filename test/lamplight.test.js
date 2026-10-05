@@ -83,7 +83,7 @@ test('real CLI: zero-setup dry run, pi-managed sessions and temporary workspace/
       if (result !== undefined) console.log(JSON.stringify(result));
     `);
     script('pi', `
-      const { appendFileSync } = require('node:fs');
+      const { appendFileSync, writeFileSync } = require('node:fs');
       const { spawn } = require('node:child_process');
       function hang() {
         appendFileSync(process.env.LAMPLIGHT_TEST_HANG, process.pid+'\\n');
@@ -101,6 +101,13 @@ test('real CLI: zero-setup dry run, pi-managed sessions and temporary workspace/
         appendFileSync(process.env.LAMPLIGHT_TEST_LOG, JSON.stringify({args:process.argv.slice(2),cwd:process.cwd()})+'\\n');
         console.log('Agent output sentinel');
         console.error('Agent diagnostic sentinel');
+        const planFile = process.argv.at(-1).match(/^Plan file: (.+)$/m)?.[1];
+        if (planFile) {
+          const issues = JSON.parse(process.env.LAMPLIGHT_TEST_ISSUES || '${JSON.stringify([issue(1)])}');
+          const prs = JSON.parse(process.env.LAMPLIGHT_TEST_PRS || '[]');
+          const plan = {issue:issues[0]?.number ?? null,prs:prs.map(p => p.number),qa:!issues.length && !prs.length,reason:'Fixture decision'};
+          writeFileSync(planFile, process.env.LAMPLIGHT_TEST_PLAN || JSON.stringify(plan));
+        }
         if (process.env.LAMPLIGHT_TEST_HANG) hang();
         else process.exit(Number(process.env.LAMPLIGHT_TEST_PI_EXIT || 0));
       }
@@ -203,10 +210,20 @@ test('real CLI: zero-setup dry run, pi-managed sessions and temporary workspace/
     const afterCheckoutFailure = readFileSync(log, 'utf8').trim().split('\n').map(JSON.parse);
     assert.equal(afterCheckoutFailure.length, 4, 'checkout failure must not start a PR agent');
     assert.match(afterCheckoutFailure.at(-1).args.at(-1), /Triage open issues/);
-    for (const issues of [[], [issue(1)]]) {
+    for (const [issues, selected, plan] of [
+      [[], 'QA'],
+      [[issue(1)], 'GH-1'],
+      [[issue(1), issue(2)], 'GH-2', { issue: 2, prs: [], qa: false, reason: '#1 was already dealt with in its comments; work on #2.' }],
+      [[issue(1)], null, { issue: null, prs: [], qa: false, reason: '#1 is obsolete per the existing handoff; wait without another comment.' }],
+    ]) {
+      const beforeCalls = readFileSync(log, 'utf8').trim().split('\n').length;
       const output = await new Promise((done, fail) => {
         const child = spawn(process.execPath, [cli], {
-          cwd: checkout, env: { ...env, LAMPLIGHT_TEST_URL: pathToFileURL(checkout).href, LAMPLIGHT_TEST_ISSUES: JSON.stringify(issues) },
+          cwd: checkout, env: {
+            ...env, LAMPLIGHT_TEST_URL: pathToFileURL(checkout).href, LAMPLIGHT_TEST_ISSUES: JSON.stringify(issues),
+            ...(plan ? { LAMPLIGHT_TEST_PLAN: JSON.stringify(plan) } : {}),
+            ...(selected === null ? { LAMPLIGHT_TEST_PRS: JSON.stringify([pr('Closes #2')]) } : {}),
+          },
           stdio: ['ignore', 'pipe', 'pipe'],
         });
         let output = '', stopping = false;
@@ -235,21 +252,42 @@ test('real CLI: zero-setup dry run, pi-managed sessions and temporary workspace/
         });
       });
       assert.match(output, /Triaging open issues/);
-      assert.match(output, /Session interrupted .*2 agent runs finished/);
-      assert.match(output, issues.length ? /Running #1/ : /Running idle QA/);
-      const stages = readFileSync(log, 'utf8').trim().split('\n').map(JSON.parse).slice(-2);
+      assert.match(output, selected ? /Session interrupted .*2 agent runs finished/ : /Session interrupted .*1 agent runs finished/);
+      if (selected === 'QA') assert.match(output, /Running idle QA/);
+      else if (selected) assert.match(output, new RegExp(`Running #${selected.slice(3)}`));
+      else assert.match(output, /No useful issue, PR, or QA action now/);
+      if (plan) assert.doesNotMatch(output, /Running #1|Running idle QA|Maintaining PR/);
+      const stages = readFileSync(log, 'utf8').trim().split('\n').map(JSON.parse).slice(beforeCalls);
+      assert.equal(stages.length, selected ? 2 : 1);
       assert.match(stages[0].args.at(-1), /Triage open issues/);
-      assert.match(stages[1].args.at(-1), issues.length ? /Implement issue #1/ : /QA this repository/);
-      if (!issues.length) {
+      assert.match(stages[0].args.at(-1), /Read issue comments/);
+      assert.match(stages[0].args.at(-1), /completed handoff even if the issue remains open/);
+      if (selected) assert.match(stages[1].args.at(-1), selected === 'QA' ? /QA this repository/ : new RegExp(`Implement issue #${selected.slice(3)}`));
+      if (selected === 'QA') {
         assert.match(stages[1].args.at(-1), /QA findings must show the problem visually whenever applicable, in addition to explaining it/);
         assert.match(stages[1].args.at(-1), /Attach or embed the evidence in the GitHub issue\/report or PR/);
         assert.match(stages[1].args.at(-1), /If visual evidence is not applicable, explain why and provide suitable real runtime evidence instead/);
       }
       const interruptedRoot = workspacePath(output);
-      assert.equal(existsSync(join(interruptedRoot, issues.length ? 'GH-1' : 'QA', '.git')), true);
+      assert.equal(existsSync(join(interruptedRoot, selected || 'queue', '.git')), true);
+      assert.equal(existsSync(join(interruptedRoot, 'queue', '.git', 'lamplight-plan.json')), true);
+      if (plan) assert.equal(existsSync(join(interruptedRoot, 'GH-1')), false);
       assert.ok(output.includes(`Workspaces kept for recovery: ${interruptedRoot}`));
       assert.notEqual(lockPath(output), repoLock, 'different hosts have separate locks');
       assert.equal(existsSync(lockPath(output)), false);
+    }
+    for (const plan of [null, {},
+      { issue: 99, prs: [], qa: false, reason: 'Unknown issue' },
+      { issue: null, prs: [99], qa: false, reason: 'Unknown PR' },
+      { issue: 1, prs: [], qa: true, reason: 'Conflicting actions' },
+      { issue: null, prs: [], qa: false, reason: '' },
+    ]) {
+      const beforeCalls = readFileSync(log, 'utf8').trim().split('\n').length;
+      result = run(['watch'], { LAMPLIGHT_TEST_PLAN: JSON.stringify(plan) });
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /Invalid triage plan/);
+      assert.doesNotMatch(result.stdout, /Running #|Maintaining PR|Running idle QA/);
+      assert.equal(readFileSync(log, 'utf8').trim().split('\n').length, beforeCalls + 1);
     }
     const persistent = join(dir, 'persistent');
     result = run(['run', '4', '--workspace-root', persistent]);
