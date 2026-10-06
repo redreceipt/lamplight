@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpath
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { options, actionable, linkedPR } from '../bin/lamplight.js';
+import { options, actionable, linkedPR, shouldPlan } from '../bin/lamplight.js';
 
 const cli = resolve('bin/lamplight.js');
 const repoURL = 'https://github.com/example/project';
@@ -43,6 +43,15 @@ test('PR links respect repository and issue-number boundaries', () => {
   }
 });
 
+test('idle plans defer only unchanged work, with an hourly reassessment', () => {
+  const idle = { state: 'snapshot', at: 1000 };
+  assert.equal(shouldPlan(undefined, 'snapshot', 1000), true);
+  assert.equal(shouldPlan(idle, 'changed', 1001), true);
+  assert.equal(shouldPlan(idle, 'snapshot', 1001), false);
+  assert.equal(shouldPlan(idle, 'snapshot', 1000 + 60 * 60 * 1000 - 1), false);
+  assert.equal(shouldPlan(idle, 'snapshot', 1000 + 60 * 60 * 1000), true);
+});
+
 test('real CLI: zero-setup dry run, pi-managed sessions and temporary workspace/lock lifecycle', async () => {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'lamplight-test-')));
   try {
@@ -67,13 +76,16 @@ test('real CLI: zero-setup dry run, pi-managed sessions and temporary workspace/
     }
     script('gh', `
       const { execFileSync } = require('node:child_process');
+      const { readFileSync } = require('node:fs');
+      const snapshot = process.env.LAMPLIGHT_TEST_SNAPSHOT ? JSON.parse(readFileSync(process.env.LAMPLIGHT_TEST_SNAPSHOT, 'utf8')) : {};
       const a = process.argv.slice(2);
       let result;
       const url = process.env.LAMPLIGHT_TEST_URL || '${repoURL}';
       if (a[0] === 'repo' && a[1] === 'view') result = {nameWithOwner:'example/project',url,defaultBranchRef:{name:'trunk'}};
       else if (a[0] === 'issue' && a[1] === 'view') result = {number:Number(a[2]),title:'Issue '+a[2],body:'Fix it.',state:'OPEN',labels:[],createdAt:'2026-01-01'};
-      else if (a[0] === 'issue' && a[1] === 'list') result = JSON.parse(process.env.LAMPLIGHT_TEST_ISSUES || '${JSON.stringify([issue(1)])}');
-      else if (a[0] === 'pr' && a[1] === 'list') result = JSON.parse(process.env.LAMPLIGHT_TEST_PRS || '[]');
+      else if (a[0] === 'issue' && a[1] === 'list') result = snapshot.issues || JSON.parse(process.env.LAMPLIGHT_TEST_ISSUES || '${JSON.stringify([issue(1)])}');
+      else if (a[0] === 'pr' && a[1] === 'list') result = snapshot.prs || JSON.parse(process.env.LAMPLIGHT_TEST_PRS || '[]');
+      else if (a[0] === 'api') { if (snapshot.error) process.exit(8); console.log(snapshot.head || 'a'.repeat(40)); process.exit(0); }
       else if (a[0] === 'auth' && a[1] === 'status') process.exit(0);
       else if (a[0] === 'pr' && a[1] === 'checkout') process.exit(7);
       else if (a[0] === 'repo' && a[1] === 'clone') {
@@ -136,11 +148,11 @@ test('real CLI: zero-setup dry run, pi-managed sessions and temporary workspace/
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /Would run #1/);
     assert.match(result.stdout, /Would run #2/);
-    assert.match(result.stdout, /Session plan complete .*0 agent runs finished/);
+    assert.match(result.stdout, /Session plan complete .*0 work runs finished/);
     assert.doesNotMatch(result.stdout + result.stderr, /\x1b/);
     result = run(['run', '1', '--dry-run'], { LAMPLIGHT_TEST_PRS: JSON.stringify([pr('Closes #1')]) });
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /0 agent runs finished, 1 skipped/);
+    assert.match(result.stdout, /0 work runs finished, 1 skipped/);
     assert.equal(existsSync(state), false);
     assert.equal(existsSync(log), false);
     assert.equal(existsSync(workspacePath(result.stdout)), false);
@@ -163,13 +175,13 @@ test('real CLI: zero-setup dry run, pi-managed sessions and temporary workspace/
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /Finished: Issue #1 \(agent returned\)/);
     assert.match(result.stdout, /Finished: Issue #2 \(agent returned\)/);
-    assert.match(result.stdout, /Session complete .*2 agent runs finished, 0 skipped/);
+    assert.match(result.stdout, /Session complete .*2 work runs finished, 0 skipped/);
     const runLog = result.stdout.match(/^Log: (.+)$/m)[1];
     assert.ok(runLog.startsWith(join(stateRoot, 'logs')));
     assert.match(readFileSync(runLog, 'utf8'), /pi test/);
     assert.match(readFileSync(runLog, 'utf8'), /Agent output sentinel/);
     assert.match(readFileSync(runLog, 'utf8'), /Agent diagnostic sentinel/);
-    assert.match(readFileSync(runLog, 'utf8'), /2 agent runs finished/);
+    assert.match(readFileSync(runLog, 'utf8'), /2 work runs finished/);
     const root = workspacePath(result.stdout);
     assert.equal(root.startsWith(join(temp, 'lamplight-')), true);
     assert.equal(existsSync(root), false, 'successful runs remove their temporary workspaces');
@@ -193,7 +205,7 @@ test('real CLI: zero-setup dry run, pi-managed sessions and temporary workspace/
     result = run(['run', '3', '--workflow', workflow], { LAMPLIGHT_TEST_PI_EXIT: '9' });
     assert.equal(result.status, 1);
     assert.match(result.stderr, /pi exited with 9/);
-    assert.match(result.stdout, /Session failed .*0 agent runs finished/);
+    assert.match(result.stdout, /Session failed .*0 work runs finished/);
     assert.doesNotMatch(result.stdout, /Finished: Issue #3/);
     const customPrompt = readFileSync(log, 'utf8').trim().split('\n').map(JSON.parse).at(-1).args.at(-1);
     assert.match(customPrompt, /Custom workflow sentinel/);
@@ -252,7 +264,7 @@ test('real CLI: zero-setup dry run, pi-managed sessions and temporary workspace/
         });
       });
       assert.match(output, /Triaging open issues/);
-      assert.match(output, selected ? /Session interrupted .*2 agent runs finished/ : /Session interrupted .*1 agent runs finished/);
+      assert.match(output, selected ? /Session interrupted .*1 planning runs, 1 work runs finished/ : /Session interrupted .*1 planning runs, 0 work runs finished/);
       if (selected === 'QA') assert.match(output, /Running idle QA/);
       else if (selected) assert.match(output, new RegExp(`Running #${selected.slice(3)}`));
       else assert.match(output, /No useful issue, PR, or QA action now/);
@@ -276,6 +288,88 @@ test('real CLI: zero-setup dry run, pi-managed sessions and temporary workspace/
       assert.notEqual(lockPath(output), repoLock, 'different hosts have separate locks');
       assert.equal(existsSync(lockPath(output)), false);
     }
+    for (const work of ['issue', 'qa']) {
+      const beforeWork = readFileSync(log, 'utf8').trim().split('\n').length;
+      const output = await new Promise((done, fail) => {
+        const child = spawn(process.execPath, [cli, '--interval', '1'], {
+          cwd: checkout, env: { ...env, LAMPLIGHT_TEST_URL: pathToFileURL(checkout).href, LAMPLIGHT_TEST_ISSUES: JSON.stringify(work === 'qa' ? [] : [issue(1)]) },
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        let output = '';
+        const timeout = setTimeout(() => child.kill('SIGKILL'), 20000);
+        child.stdout.on('data', chunk => {
+          output += chunk;
+          if ((output.match(/Sleeping 1s\./g)?.length || 0) === 2) child.kill('SIGTERM');
+        });
+        child.stderr.on('data', chunk => { output += chunk; });
+        child.on('error', fail);
+        child.on('close', code => {
+          clearTimeout(timeout);
+          if (code === 143) done(output);
+          else fail(new Error(`Work loop exited ${code}: ${output}`));
+        });
+      });
+      assert.equal(readFileSync(log, 'utf8').trim().split('\n').length - beforeWork, 4, 'work plans must never be cached');
+      assert.match(output, /2 planning runs, 2 work runs finished/);
+      assert.doesNotMatch(output, /skipping planner/);
+    }
+    const snapshotFile = join(dir, 'snapshot.json');
+    const snapshot = {
+      issues: [issue(1), issue(2)],
+      prs: [pr('Closes #1'), pr('Closes #2', { number: 100 })],
+      head: 'a'.repeat(40),
+    };
+    const changes = [
+      () => {}, // First repeat: unchanged, so no planner.
+      () => { snapshot.issues[0].updatedAt = '2026-02-01'; }, // Discussion changed.
+      () => { snapshot.prs[0].headRefOid = 'b'.repeat(40); },
+      () => { snapshot.prs[0].reviews = [{ state: 'CHANGES_REQUESTED', body: 'Please fix this.' }]; },
+      () => { snapshot.prs[0].statusCheckRollup = [{ name: 'test', conclusion: 'FAILURE' }]; },
+      () => { snapshot.head = 'c'.repeat(40); },
+      () => { snapshot.issues.reverse(); snapshot.prs.reverse(); }, // Ordering is not a change.
+    ];
+    writeFileSync(snapshotFile, JSON.stringify(snapshot));
+    const beforeIdle = readFileSync(log, 'utf8').trim().split('\n').length;
+    const idleOutput = await new Promise((done, fail) => {
+      const child = spawn(process.execPath, [cli, '--interval', '1'], {
+        cwd: checkout, env: {
+          ...env, LAMPLIGHT_TEST_SNAPSHOT: snapshotFile,
+          LAMPLIGHT_TEST_PLAN: JSON.stringify({ issue: null, prs: [], qa: false, reason: 'Waiting for human review.' }),
+        }, stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let output = '', pass = 0;
+      const timeout = setTimeout(() => child.kill('SIGKILL'), 20000);
+      child.stdout.on('data', chunk => {
+        output += chunk;
+        const passes = output.match(/Sleeping 1s\./g)?.length || 0;
+        if (passes <= pass) return;
+        pass = passes;
+        try {
+          const count = readFileSync(log, 'utf8').trim().split('\n').length - beforeIdle;
+          assert.equal(count, [1, 1, 2, 3, 4, 5, 6, 6][pass - 1], output);
+          if (pass <= changes.length) {
+            changes[pass - 1]();
+            writeFileSync(snapshotFile, JSON.stringify(snapshot));
+          } else {
+            snapshot.error = true;
+            writeFileSync(snapshotFile, JSON.stringify(snapshot));
+          }
+        } catch (err) { child.kill('SIGTERM'); fail(err); }
+      });
+      child.stderr.on('data', chunk => { output += chunk; });
+      child.on('error', fail);
+      child.on('close', code => {
+        clearTimeout(timeout);
+        if (code === 1) done(output);
+        else fail(new Error(`Idle loop exited ${code}: ${output}`));
+      });
+    });
+    assert.equal(idleOutput.match(/skipping planner/g).length, 2);
+    assert.match(idleOutput, /gh exited with 8; stopped without continuing/);
+    assert.match(idleOutput, /Session failed/);
+    assert.equal(readFileSync(log, 'utf8').trim().split('\n').length - beforeIdle, 6, 'read failures must not start another planner');
+    assert.match(idleOutput, /6 planning runs, 0 work runs finished/);
+    assert.doesNotMatch(idleOutput, /Running #|Maintaining PR|Running idle QA/);
     for (const plan of [null, {},
       { issue: 99, prs: [], qa: false, reason: 'Unknown issue' },
       { issue: null, prs: [99], qa: false, reason: 'Unknown PR' },
@@ -329,7 +423,7 @@ test('real CLI: zero-setup dry run, pi-managed sessions and temporary workspace/
         .map(row => row.trim().split(/\s+/)).filter(([pid, state]) => pids.includes(Number(pid)) && !state.startsWith('Z'));
       assert.deepEqual(running, [], 'no agent/tool processes survive timeout or interruption');
       assert.match(output, signal ? /Session interrupted/ : /pi timed out after 1s/);
-      assert.match(output, /0 agent runs finished/);
+      assert.match(output, /0 work runs finished/);
       assert.doesNotMatch(output, /Running #6/);
       assert.equal(existsSync(join(workspacePath(output), 'GH-5', '.git')), true);
       assert.equal(existsSync(lockPath(output)), false);

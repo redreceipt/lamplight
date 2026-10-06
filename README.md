@@ -72,8 +72,8 @@ npx lamplight run 72 --workflow ~/.config/lamplight/my-workflow.md
 | `--dry-run` | Read GitHub and print one pass's plan. Never invokes pi, clones, locks, or writes runner state. A triage plan cannot predict which labels pi would change. |
 | `--verbose` | Stream agent and command output instead of showing the terminal dashboard. |
 
-Each loop asks pi to triage **all open issues**, even with `--label`, and plan the
-next useful work from GitHub discussions and live PR state. It maintains
+Each planning run asks pi to triage **all open issues**, even with `--label`, and
+plan the next useful work from GitHub discussions and live PR state. It maintains
 `bug`/`blocked` labels and comments when blocked status changes. Existing
 evidence-backed comments that an issue is fixed, duplicate, obsolete, or awaiting
 a human count as completed handoffs, even when the issue remains open. New feedback
@@ -84,8 +84,15 @@ it maintains only selected PRs and works at most one selected eligible issue.
 Current, green PRs awaiting human review and pending CI alone need no maintenance.
 When there is no actionable work, pi can choose useful idle QA or simply wait,
 without repeating exhausted checks or filing duplicate bugs. Then the runner
-waits five minutes and repeats. Triage and idle QA are built in; there are no
-`--triage` or `--qa` flags. Dry-run shows mechanical eligibility only; it cannot
+waits five minutes and polls GitHub again. After a wait plan, unchanged issue/PR
+snapshots skip the planner: discussion update timestamps, PR heads and reviews,
+CI results, and the default-branch commit are compared. A change triggers
+planning on the next poll; even without changes, an hourly planning run
+reassesses useful idle QA and external blockers. This idle state is in memory;
+restarting always plans afresh. Read failures stop the runner rather than being
+treated as unchanged. Plans selecting work are never cached.
+
+Triage and idle QA are built in; there are no `--triage` or `--qa` flags. Dry-run shows mechanical eligibility only; it cannot
 predict pi's history-based decisions.
 
 `run` and the default loop both skip closed/blocked issues and issues already referenced by
@@ -174,16 +181,18 @@ retained externally. Logs are not automatically pruned.
 ### Live session progress
 
 Interactive terminals show a fixed, non-scrolling dashboard: repository, elapsed
-time, current phase and issue/PR title, finished agent runs, skipped explicit-run
-issues, and the previous completion or skip. Between passes it counts down to the
-next pass. Agent text and git output go to a durable run log, not the dashboard.
+time, current phase and issue/PR title, separate planning and work-run counts,
+skipped explicit-run issues, and the previous completion or skip. Between passes
+it counts down to the next pass. Agent text and git output go to a durable run log, not the dashboard.
 
 The dashboard uses the terminal's alternate screen, fits its width and height,
 and restores the screen and cursor on exit, including errors and Ctrl-C. Exit
 prints a summary and the run-log path, plus a recovery path when temporary
 workspaces are retained. Failures remain visible after the dashboard closes.
-Counts span the current invocation, not prior sessions; “finished” means the
-agent returned successfully, **not** that a PR was created or an issue resolved.
+Counts span the current invocation, not prior sessions. Planning counts successful
+triage runs; work counts successful issue, PR-maintenance, and QA runs. A finished
+work run means the agent returned successfully, **not** that a PR was created or
+an issue resolved. Unchanged idle polls count as neither.
 
 Use `--verbose` for streaming output. Redirecting either output stream, setting
 `TERM=dumb`, running `doctor`, or using `--dry-run` also keeps output plain, with
@@ -203,8 +212,9 @@ No terminal UI dependencies are needed.
   prohibit merges/deploys, but prompts are not permission enforcement. Restrict
   credentials and use branch protection for hard controls.
 - Triage, selected PR maintenance, and useful issue-generating idle QA are automatic
-  in the loop. Planning still invokes pi each pass; increase `--interval` to reduce
-  cost. History-aware routing is model judgment, not a hard no-duplicate guarantee.
+  in the loop. Idle polls read GitHub without invoking pi until state changes or
+  the hourly reassessment is due; increase `--interval` to poll less often.
+  History-aware routing is model judgment, not a hard no-duplicate guarantee.
 - Doctor without `--model` does not validate provider credentials, and dry-run
   does not verify model readiness. Run `pi` to configure `/login` and `/model`.
 - GitHub + pi only. No daemon, parallel agents, tracker adapters, automatic

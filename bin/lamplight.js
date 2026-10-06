@@ -94,6 +94,10 @@ export function linkedPR(prs, issue, repoURL) {
     || reference.test(`${pr.title}\n${pr.body}`));
 }
 
+export function shouldPlan(idle, state, now = performance.now()) {
+  return !idle || idle.state !== state || now - idle.at >= 60 * 60 * 1000;
+}
+
 function canonical(path) {
   return existsSync(path) ? realpathSync(path) : join(canonical(dirname(path)), basename(path));
 }
@@ -203,7 +207,8 @@ async function main(args) {
       if (items.length >= 1000) throw new Error(`Reached the 1000 ${kind} safety cap; narrow the queue before running.`);
       return items;
     }
-    const getPRs = () => list('pr', 'number,title,body,headRefName,isCrossRepository,closingIssuesReferences');
+    const prFields = 'number,title,body,headRefName,isCrossRepository,closingIssuesReferences';
+    const getPRs = (fields = prFields) => list('pr', fields);
 
     async function workspace(key) {
       const dir = join(root, key);
@@ -213,7 +218,7 @@ async function main(args) {
       if (![repo.url, `${repo.url}.git`, `git@${url.hostname}:${name}.git`].includes(remote)) throw new Error(`Unexpected workspace origin in ${dir}: ${remote}`);
       return dir;
     }
-    async function agent(dir, task, implementation = false) {
+    async function agent(dir, task, kind = 'work') {
       await exec('pi', ['--print', '--no-approve',
         ...(o.model ? ['--model', o.model] : []), '--',
         `You are lamplight, working only in this isolated checkout of ${name}: ${dir}.
@@ -224,9 +229,9 @@ Never access other checkouts, expose secrets, merge PRs, enable auto-merge, or d
 QA findings must show the problem visually whenever applicable, in addition to explaining it. PRs must demonstrate the solution visually whenever possible in ## Proof; include before/after evidence for a visible bug fix.
 Use screenshots for visible states and video for interactions, captured from the real running surface, never mockups or fabricated output. Attach or embed the evidence in the GitHub issue/report or PR so humans can see it, not just a local file path. Keep artifacts outside Git and redact secrets and private data before sharing.
 If visual evidence is not applicable, explain why and provide suitable real runtime evidence instead. If applicable visuals cannot be captured or attached, report the blocker explicitly and keep PRs draft; do not silently substitute prose or tests. These evidence rules also apply with a custom workflow.
-${implementation ? workflow : ''}
+${kind === 'work' ? workflow : ''}
 Task:\n${task}`], dir, true, Number(o['agent-timeout']));
-      progress.finish();
+      progress.finish(kind);
     }
     async function runIssue(issue, prs, handoff = '') {
       if (!actionable([issue]).length) return progress.skip(`#${issue.number}: closed or blocked; skipped.`);
@@ -241,32 +246,46 @@ Use branch lamplight/GH-${issue.number}-<slug>, base new work on the current ori
 Read the issue comments first. If already fixed, duplicate, or not actionable, explain only a new finding not already covered in the discussion, then stop without a PR. If an existing evidence-backed handoff still applies, make no further changes or comments.
 Otherwise validate, commit, push, and open a draft PR linking "Closes #${issue.number}" using the repository's PR template. Do not open a duplicate PR; recheck GitHub first.
 ${handoff ? `Planner handoff: ${handoff}` : ''}
-Issue data: ${JSON.stringify(issue)}`, true);
+Issue data: ${JSON.stringify(issue)}`);
     }
+    let idle;
     async function watchPass() {
-      progress.phase('Triage');
-      log(`${o['dry-run'] ? 'Would triage' : 'Triaging'} open issues (labels/comments enabled).`);
-      let prs = await getPRs();
+      progress.phase('Checking GitHub state');
+      let prs = await getPRs(o['dry-run'] ? undefined : `${prFields},updatedAt,headRefOid,isDraft,reviewDecision,reviews,statusCheckRollup`);
       const eligiblePRs = prs.filter(p => !p.isCrossRepository && /^lamplight\/GH-\d+-/.test(p.headRefName));
       let plan;
       if (!o['dry-run']) {
-        const issues = await list('issue', issueFields);
+        const issues = await list('issue', `${issueFields},updatedAt`);
+        const head = await exec('gh', ['api', '--hostname', url.hostname, `repos/${name}/git/ref/heads/${repo.defaultBranchRef.name}`, '--jq', '.object.sha']);
+        const byNumber = (a, b) => a.number - b.number;
+        const state = JSON.stringify([head, issues.sort(byNumber), prs.sort(byNumber)]);
+        if (!shouldPlan(idle, state)) {
+          progress.phase('Waiting');
+          log('GitHub unchanged since idle plan; skipping planner until hourly QA reassessment.');
+          return;
+        }
+        progress.phase('Triage');
+        log('Triaging open issues (labels/comments enabled).');
+        const reassessing = idle?.state === state;
+        if (reassessing) log('Hourly idle reassessment: consider useful new QA opportunities.');
         const dir = await workspace('queue');
         const planFile = join(dir, '.git', 'lamplight-plan.json');
         writeFileSync(planFile, 'null\n', { mode: 0o600 });
         await agent(dir, `${readFileSync(new URL('../prompts/triage.md', import.meta.url), 'utf8')}
+${reassessing ? 'Scheduled idle reassessment: consider useful new QA opportunities, but do not repeat exhausted checks.' : ''}
 Plan file: ${planFile}
 Issue label filters (AND matching; empty means all): ${JSON.stringify(o.label || [])}
 Open issues: ${JSON.stringify(issues)}
 Open PRs (do not implement issues referenced by these): ${JSON.stringify(prs)}
-Eligible PRs for maintenance: ${JSON.stringify(eligiblePRs)}`);
+Eligible PRs for maintenance: ${JSON.stringify(eligiblePRs)}`, 'planning');
         plan = JSON.parse(readFileSync(planFile, 'utf8'));
         if (!plan || !(plan.issue === null || Number.isSafeInteger(plan.issue) && issues.some(i => i.number === plan.issue))
           || !Array.isArray(plan.prs) || plan.prs.some(n => !Number.isSafeInteger(n) || !eligiblePRs.some(p => p.number === n))
           || typeof plan.qa !== 'boolean' || plan.qa && (plan.issue !== null || plan.prs.length)
           || typeof plan.reason !== 'string' || !plan.reason.trim()) throw new Error('Invalid triage plan; stopped without dispatching work.');
         log(`Plan: ${plan.reason}`);
-      }
+        idle = plan.issue === null && !plan.prs.length && !plan.qa ? { state, at: performance.now() } : undefined;
+      } else log('Would triage open issues (labels/comments enabled).');
       progress.phase('Reading open PRs');
       if (!o['dry-run']) prs = await getPRs();
       for (const pr of prs.filter(p => !p.isCrossRepository && /^lamplight\/GH-\d+-/.test(p.headRefName)
@@ -283,7 +302,7 @@ Eligible PRs for maintenance: ${JSON.stringify(eligiblePRs)}`);
 Sync with origin/${repo.defaultBranchRef.name} without force-pushing. Resolve only clear conflicts; report product-judgment blockers.
 Fix branch-caused CI failures and actionable feedback; classify unrelated failures. Validate changed code and refresh ## Proof only when the existing evidence no longer covers it or applicable visual evidence is missing. Preserve valid proof on an unchanged head. Push to this same branch, never open another PR.
 If already current and green with no actionable feedback and no applicable visual evidence missing, do nothing. Never merge the PR.
-Planner handoff: ${plan.reason}`, true);
+Planner handoff: ${plan.reason}`);
       }
       progress.phase('Reading issue queue');
       if (!o['dry-run']) prs = await getPRs();
@@ -299,7 +318,7 @@ Planner handoff: ${plan.reason}`, true);
           await exec('git', ['checkout', repo.defaultBranchRef.name], dir, true);
           await exec('git', ['pull', '--ff-only'], dir, true);
           await agent(dir, `QA this repository using its README and documented runtime. Follow the planner's selected opportunity: ${plan.reason}
-Inspect existing open AND closed issues to avoid duplicates. File only reproducible, new bugs with steps, expected/actual behavior, and real runtime evidence. Do not change source code, branch, push, deploy, or open PRs. Report unavailable dependencies honestly.`);
+Inspect existing open AND closed issues to avoid duplicates. File only reproducible, new bugs with steps, expected/actual behavior, and real runtime evidence. Do not change source code, branch, push, deploy, or open PRs. Report unavailable dependencies honestly.`, 'qa');
         }
       } else {
         progress.phase('Waiting');

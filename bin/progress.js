@@ -4,7 +4,7 @@ import { stripVTControlCharacters } from 'node:util';
 export function createProgress({ stdout = process.stdout, stderr = process.stderr, enabled = true, dashboard = true } = {}) {
   const interactive = enabled && dashboard && stdout.isTTY && stderr.isTTY && process.env.TERM !== 'dumb';
   const started = Date.now();
-  let phase = 'Checking tools', detail = '', repository = '', previous = 'None yet', finished = 0, skipped = 0;
+  let phase = 'Checking tools', detail = '', repository = '', previous = 'None yet', planned = 0, finished = 0, skipped = 0;
   let lineStart = true, wakeAt, stopped = false, logFile, logPath, pending = '';
   const elapsed = () => {
     const seconds = Math.floor((Date.now() - started) / 1000);
@@ -29,7 +29,7 @@ export function createProgress({ stdout = process.stdout, stderr = process.stder
       `  ${wakeAt ? 'Waiting' : 'Working'}     ${current}`,
       `              ${detail}`,
       '',
-      `  Agent runs  ${finished} finished · ${skipped} skipped`,
+      `  Agent runs  ${planned} planning · ${finished} work · ${skipped} skipped`,
       `  Previous    ${previous}`,
       '',
       `  Ctrl-C stop · ${logPath ? 'details saved to run log' : 'starting up'}`,
@@ -59,7 +59,13 @@ export function createProgress({ stdout = process.stdout, stderr = process.stder
     },
     repository(name) { repository = name; render(); },
     phase(label, title = '') { phase = label; detail = title; wakeAt = undefined; render(); },
-    finish() { finished++; previous = `${phase} finished`; log(`Finished: ${phase} (agent returned).`); render(); },
+    finish(kind = 'work') {
+      if (kind === 'planning') planned++;
+      else finished++;
+      previous = `${phase} finished`;
+      log(`Finished: ${phase} (agent returned).`);
+      render();
+    },
     skip(message) { skipped++; previous = message; log(message); render(); },
     wait(seconds) { wakeAt = Date.now() + seconds * 1000; detail = ''; render(); },
     stop(outcome) {
@@ -71,7 +77,7 @@ export function createProgress({ stdout = process.stdout, stderr = process.stder
         stderr.write('\x1b[?25h\x1b[?1049l');
       }
       try {
-        const summary = `Session ${outcome} (${elapsed()}): ${finished} agent runs finished, ${skipped} skipped.\n`;
+        const summary = `Session ${outcome} (${elapsed()}): ${planned} planning runs, ${finished} work runs finished, ${skipped} skipped.\n`;
         if (enabled) {
           stdout.write(`${interactive ? pending : ''}${lineStart || (interactive && !pending) ? '' : '\n'}${summary}${logPath ? `Log: ${logPath}\n` : ''}`);
           if (logFile !== undefined) writeSync(logFile, `\n${summary}`);

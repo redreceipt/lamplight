@@ -35,10 +35,12 @@ test('dashboard stays fixed, logs output, fits resizes, and restores the termina
     assert.equal(stdout.output, '');
     assert.doesNotMatch(stderr.output, /agent text|agent diagnostic|startup diagnostic/);
     progress.finish();
+    progress.phase('Triage');
+    progress.finish('planning');
     progress.skip('#2: blocked; skipped.');
     progress.wait(5);
     assert.match(stderr.output, /Next pass in 5s/);
-    assert.match(stderr.output, /1 finished · 1 skipped/);
+    assert.match(stderr.output, /1 planning · 1 work · 1 skipped/);
     assert.match(stderr.output, /Previous    Issue #1 finished/);
     assert.match(stderr.output, /Previous    #2: blocked; skipped./);
     stderr.columns = 20;
@@ -61,7 +63,7 @@ test('dashboard stays fixed, logs output, fits resizes, and restores the termina
     assert.ok(stderr.output.startsWith('\x1b[?1049h\x1b[?25l'));
     assert.ok(stderr.output.endsWith('\x1b[?25h\x1b[?1049l'));
     assert.equal(stderr.listenerCount('resize'), 0);
-    assert.match(stdout.output, /Session interrupted .*1 agent runs finished, 1 skipped/);
+    assert.match(stdout.output, /Session interrupted .*1 planning runs, 1 work runs finished, 1 skipped/);
     assert.ok(stdout.output.includes(`Log: ${path}`));
     assert.match(readFileSync(path, 'utf8'), /startup diagnostic\npartial agent text completed\nagent diagnostic\nFinished: Issue #1/);
     assert.match(readFileSync(path, 'utf8'), /Session interrupted/);
@@ -90,7 +92,7 @@ test('redirected, dumb, disabled, and verbose terminals stay plain; unfinished w
       progress.stop('failed');
       assert.equal(stderr.output, '');
       assert.doesNotMatch(stdout.output, /\x1b/);
-      if (enabled) assert.match(stdout.output, /still working\nSession failed .*0 agent runs finished/);
+      if (enabled) assert.match(stdout.output, /still working\nSession failed .*0 work runs finished/);
       else assert.equal(stdout.output, 'still working');
     }
     process.env.TERM = 'xterm';
